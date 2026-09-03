@@ -1,0 +1,13 @@
+name = "quainhon-dev-control"
+main = "src/index.js"
+compatibility_date = "2026-08-28"
+
+# Local-only config: omit production KV so the worker uses its dev-only in-memory fallback.
+
+[vars]
+# Replace these placeholders locally, or leave them blank to show the unconfigured state.
+GOOGLE_CLIENT_ID = "618574836329-804afdur8fil328shk6ournqecfn2m1j.apps.googleusercontent.com"
+GOOGLE_API_KEY = "AIzaSyCn2NkXVnN9lPFwjulb8TQRfbNluOV0Rbg"
+GOOGLE_APP_ID = "618574836329"
+# Restrict the Picker to the dedicated QN_RENDER_SOURCE folder.
+GOOGLE_SOURCE_FOLDER_ID = "1UlLqtCc-0b40SZP0FOpC4jzQbB3_VIc4"

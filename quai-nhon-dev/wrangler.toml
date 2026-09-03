@@ -1,0 +1,20 @@
+name = "quainhon-dev-control"
+main = "src/index.js"
+compatibility_date = "2026-08-28"
+
+[vars]
+# Browser-visible Google configuration. Never put OAuth access tokens here.
+GOOGLE_CLIENT_ID = "618574836329-804afdur8fil328shk6ournqecfn2m1j.apps.googleusercontent.com"
+GOOGLE_API_KEY = "AIzaSyCn2NkXVnN9lPFwjulb8TQRfbNluOV0Rbg"
+GOOGLE_APP_ID = "618574836329"
+# Restrict the Picker to a single source folder for QN_RENDER_SOURCE.
+GOOGLE_SOURCE_FOLDER_ID = "1UlLqtCc-0b40SZP0FOpC4jzQbB3_VIc4"
+
+[[kv_namespaces]]
+binding = "JOBS"
+id = "5a4996760502405f90e85e0155eb06a2"
+
+# Add your custom domain after the worker is working:
+# routes = [
+#   { pattern = "quainhon.dev/*", zone_name = "quainhon.dev" }
+# ]
