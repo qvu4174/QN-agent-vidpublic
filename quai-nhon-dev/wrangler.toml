@@ -1,4 +1,4 @@
-name = "quainhon-dev-control"
+name = "qn-agent-vidpublic"
 main = "src/index.js"
 compatibility_date = "2026-08-28"
 
@@ -12,7 +12,7 @@ GOOGLE_SOURCE_FOLDER_ID = "1UlLqtCc-0b40SZP0FOpC4jzQbB3_VIc4"
 
 [[kv_namespaces]]
 binding = "JOBS"
-id = "5a4996760502405f90e85e0155eb06a2"
+id = "bf17d4149e664b1b8e1ec2abd75f4c6d"
 
 # Add your custom domain after the worker is working:
 # routes = [
