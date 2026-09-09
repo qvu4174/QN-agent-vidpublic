@@ -1,0 +1,275 @@
+--- a/quai-nhon-dev/src/index.js
++++ b/quai-nhon-dev/src/index.js
+@@ -225,10 +225,264 @@
+ function setDriveMessage(text,error=false){$("drive-message").textContent=text;$("drive-message").className="status"+(error?" error":"")}function hasOAuth(){return !!(window.google&&google.accounts&&google.accounts.oauth2)}function initializeGoogle(){if(!CONFIG.clientId||!CONFIG.apiKey||!CONFIG.appId||!SOURCE_FOLDER_ID)throw Error("Google Drive browser configuration is incomplete.");if(!hasOAuth())throw Error("Google Identity Services is unavailable.");if(!tokenClient)tokenClient=google.accounts.oauth2.initTokenClient({client_id:CONFIG.clientId,scope:"https://www.googleapis.com/auth/drive.file",callback:handleToken,error_callback:e=>setDriveMessage(e.error_description||e.error||"Google OAuth failed.",true)});return true}function initializeGoogleOnLoad(){try{initializeGoogle();setDriveMessage("Google Drive is ready to connect.")}catch(e){setDriveMessage(e.message,true)}}function initializePickerOnLoad(){try{if(!window.gapi)throw Error("Google Picker is unavailable.");gapi.load("picker",()=>{pickerReady=true})}catch(e){setDriveMessage(e.message,true)}}function handleGoogleLoadError(message){setDriveMessage(message,true)}
+ function connectGoogleDrive(){try{if(accessToken){accessToken=null;$("drive-connect").textContent="Connect Google Drive";$("select-files").disabled=true;$("drive-status").textContent="Not connected";setDriveMessage("Connect Google Drive to begin.");return}if(!tokenClient)throw Error("Google OAuth is not ready yet. Try again in a moment.");tokenClient.requestAccessToken({prompt:"consent"})}catch(e){setDriveMessage(e.message,true)}}function handleToken(response){if(response.error)return setDriveMessage(response.error_description||response.error,true);accessToken=response.access_token;$("drive-connect").textContent="Disconnect Google Drive";$("select-files").disabled=false;$("drive-status").textContent="Connected to Google Drive";setDriveMessage("Choose 5–10 video clips.")}
+ function openPicker(){try{if(!accessToken)throw Error("Connect Google Drive first.");if(!pickerReady||!window.google?.picker)return setDriveMessage("Google Picker is still loading. Try again in a moment.",true);const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(SOURCE_FOLDER_ID).setMimeTypes("video/mp4,video/quicktime,video/webm,video/x-matroska");new google.picker.PickerBuilder().setAppId(CONFIG.appId).setDeveloperKey(CONFIG.apiKey).setOAuthToken(accessToken).addView(view).enableFeature(google.picker.Feature.MULTISELECT_ENABLED).setCallback(pickerCallback).build().setVisible(true)}catch(e){setDriveMessage(e.message,true)}}function pickerCallback(data){if(data.action===google.picker.Action.CANCEL)return setDriveMessage("File selection cancelled.");if(data.action===google.picker.Action.ERROR)return setDriveMessage("Google Picker returned an error. Reconnect and retry.",true);if(data.action!==google.picker.Action.PICKED)return;(data.docs||[]).forEach(file=>{if(selectedFiles.size>=10&&!selectedFiles.has(file.id))return;const name=file.name||"Untitled video",mimeType=file.mimeType||"video/mp4";selectedFiles.set(file.id,{id:file.id,name,mimeType,sizeBytes:file.sizeBytes||null})});renderFiles();createSourceIntakeJob();renderJson();$("shot-output").textContent=JSON.stringify(createShotDetectionOutput(manifest()),null,2);setDriveMessage(selectedFiles.size+" clip(s) selected.")}
+-function formatSize(bytes){if(!bytes)return"—";const units=["B","KB","MB","GB"];let n=Number(bytes),i=0;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(i?1:0)+" "+units[i]}function renderFiles(){const files=[...selectedFiles.values()];$("clip-count").textContent=files.length+" / 10";$("summary-count").textContent=files.length;$("summary-size").textContent=formatSize(files.reduce((sum,file)=>sum+(Number(file.sizeBytes)||0),0))||"—";$("start").disabled=files.length<5;$("selected-files").innerHTML=files.length?files.map(file=>'<div class="file"><div class="thumb">▶</div><div class="file-body"><div class="file-name">'+escapeHtml(file.name)+'</div><div class="file-meta">'+escapeHtml(file.mimeType)+' · '+formatSize(file.sizeBytes)+' · — duration · — resolution · — fps</div></div><button class="remove" data-file-id="'+escapeHtml(file.id)+'" aria-label="Remove '+escapeHtml(file.name)+'">×</button></div>').join(""):"<div class=\\\"muted\\\">No source clips selected.</div>";$("selected-files").querySelectorAll("[data-file-id]").forEach(button=>button.onclick=()=>{selectedFiles.delete(button.dataset.fileId);renderFiles();renderJson()})}function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]))}
++function formatSize(bytes){if(!bytes)return"—";const units=["B","KB","MB","GB"];let n=Number(bytes),i=0;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(i?1:0)+" "+units[i]}function renderFiles(){const files=[...selectedFiles.values()];$("clip-count").textContent=files.length+" / 10";$("summary-count").textContent=files.length;$("summary-size").textContent=formatSize(files.reduce((sum,file)=>sum+(Number(file.sizeBytes)||0),0))||"—";$("start").disabled=files.length<5;$("selected-files").innerHTML=files.length?files.map(file=>'<div class="file"><div class="thumb">▶</div><div class="file-body"><div class="file-name">'+escapeHtml(file.name)+'</div><div class="file-meta">'+formatSize(file.sizeBytes)+'</div></div><button class="remove" data-file-id="'+escapeHtml(file.id)+'" aria-label="Remove '+escapeHtml(file.name)+'">×</button></div>').join(""):"<div class=\\\"muted\\\">No source clips selected.</div>";$("selected-files").querySelectorAll("[data-file-id]").forEach(button=>button.onclick=()=>{selectedFiles.delete(button.dataset.fileId);renderFiles();renderJson()})}function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]))}
+ function normalizeSource(file,index){return{source_id:"src_"+String(index+1).padStart(3,"0"),drive_file_id:file.id||null,drive_path:file.drivePath||null,filename:file.name||null,mime_type:file.mimeType||null,size_bytes:file.sizeBytes||null,duration_sec:file.durationSec||null,resolution:file.resolution||null,fps:file.fps||null,local_path:TEST_LOCAL_SYNC_BYPASS&&file.name?"/QN_RENDER_SOURCE/"+file.name:null,local_ready:TEST_LOCAL_SYNC_BYPASS&&!!file.name}}function validateSource(source){return !!(source.drive_file_id&&source.filename&&source.mime_type)}function createSourceIntakeJob(){if(!selectedFiles.size)return null;if(!sourceIntakeJob)sourceIntakeJob={job_id:crypto.randomUUID(),step:"01_source_intake",status:"active",sources:[]};sourceIntakeJob.sources=[...selectedFiles.values()].map(normalizeSource);sourceIntakeJob.status=sourceIntakeJob.sources.every(validateSource)&&sourceIntakeJob.sources.every(source=>source.local_ready)?"completed":"active";return sourceIntakeJob}function manifest(){const job=createSourceIntakeJob();return{job_id:job?job.job_id:null,step:"01_source_intake",clips:job?job.sources:[]}}function renderJson(){const value=JSON.stringify(manifest(),null,2);$("json-preview").textContent=value;$("json-output").textContent=value}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating test job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");$("message").textContent="Test job queued: "+data.job.job_id;$("message").className="status"}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<5}}function authHeaders(){return{"content-type":"application/json","x-control-key":$("control-key").value.trim()}}$("control-key").oninput=async()=>{const status=$("auth-status");if(!$("control-key").value.trim()){status.textContent="";return}status.textContent="Checking control key...";try{const response=await fetch("/api/auth/check",{method:"POST",headers:authHeaders()}),data=await response.json();status.textContent=data.valid?"Control key valid":"Invalid control key";status.className="status"+(data.valid?"":" error")}catch(e){status.textContent=e.message;status.className="status error"}};
+-$("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;let activeJobId=null;async function pollActiveJob(jobId){for(let attempt=0;attempt<120;attempt++){if(activeJobId!==jobId)return;const response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{headers:{"x-control-key":$("control-key").value.trim()}});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not read job status.");if(data.job?.job_id!==activeJobId)return;$("message").textContent="Job status: "+(data.job.status||"unknown");if(data.job.shot_manifest?.shots?.length){$("shot-output").textContent=JSON.stringify(data.job.shot_manifest,null,2);const steps=document.querySelectorAll("#steps .step");steps[0].className="step completed";steps[1].className="step completed";const metrics=document.querySelectorAll(".metric strong");metrics[1].textContent="2";metrics[2].textContent="1";metrics[3].textContent="14";metrics[5].textContent="12%";document.querySelector(".agent-head h2").textContent="3/17 Quality Agent";document.querySelector(".agent-description").textContent="Quality Agent pending.";$("message").textContent="Step 2 completed for "+activeJobId;return}if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("steps").querySelectorAll(".step")[0].className="step completed";$("message").textContent="Step 1 completed. Job: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<5}}$("start").onclick=startPipeline;document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
+-</script><script src="https://accounts.google.com/gsi/client" async defer onload="initializeGoogleOnLoad()" onerror="handleGoogleLoadError('Google Identity Services failed to load.')"></script><script src="https://apis.google.com/js/api.js" async defer onload="initializePickerOnLoad()" onerror="handleGoogleLoadError('Google Picker failed to load.')"></script></body></html>`;
++$("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;let activeJobId=null;async function pollActiveJob(jobId){for(let attempt=0;attempt<120;attempt++){if(activeJobId!==jobId)return;const response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{headers:{"x-control-key":$("control-key").value.trim()}});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not read job status.");if(data.job?.job_id!==activeJobId)return;document.dispatchEvent(new CustomEvent("qn:job-response",{detail:data.job}));$("message").textContent="Job status: "+(data.job.status||"unknown");if(data.job.shot_manifest?.shots?.length){$("shot-output").textContent=JSON.stringify(data.job.shot_manifest,null,2);const steps=document.querySelectorAll("#steps .step");steps[0].className="step completed";steps[1].className="step completed";const metrics=document.querySelectorAll(".metric strong");metrics[1].textContent="2";metrics[2].textContent="1";metrics[3].textContent="14";metrics[5].textContent="12%";document.querySelector(".agent-head h2").textContent="3/17 Quality Agent";document.querySelector(".agent-description").textContent="Quality Agent pending.";$("message").textContent="Step 2 completed for "+activeJobId;return}if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("steps").querySelectorAll(".step")[0].className="step completed";$("message").textContent="Step 1 completed. Job: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<5}}$("start").onclick=startPipeline;document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
++</script>
++<style>
++/* Visual layer. Pipeline bindings and operation handlers remain unchanged. */
++:root{--studio-bg:#11120f;--studio-text:#edece4;--studio-muted:#94978c;--studio-lime:#c4db80;--studio-line:#33362d}
++body{background:var(--studio-bg);color:var(--studio-text);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
++button,input{font:inherit}
++[hidden]{display:none!important}
++.operator-header{height:104px;margin:0 auto;max-width:1600px;padding:0 5vw;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:32px}
++.operator-brand{font-size:18px;font-weight:650;letter-spacing:.17em;white-space:nowrap}
++.operator-brand span{font-weight:350;color:var(--studio-muted);letter-spacing:.22em;margin-left:12px}
++.operator-nav{display:flex;gap:36px;align-items:center;height:100%}
++.operator-nav button,.operator-link{background:none;border:0;color:var(--studio-muted);font:inherit;cursor:pointer;padding:12px 0}
++.operator-nav button{position:relative;font-size:14px}
++.operator-nav button[aria-current=page]{color:var(--studio-text)}
++.operator-nav button[aria-current=page]:after{content:"";position:absolute;bottom:2px;left:0;right:0;height:2px;background:var(--studio-lime)}
++.operator-header>.operator-link{justify-self:end;font-size:14px}
++.operator-link:hover,.operator-nav button:hover{color:var(--studio-text)}
++.operator-view{max-width:1440px;margin:0 auto;padding:64px 5vw 70px}
++.operator-view h1{font:400 clamp(42px,5.3vw,78px)/1.03 Georgia,"Times New Roman",serif;letter-spacing:-.045em;margin:0 0 26px}
++.operator-view p{color:var(--studio-muted);font-size:16px;line-height:1.7}
++.operator-view .btn{border:1px solid #4d5143;border-radius:4px;background:transparent;color:var(--studio-text);font-size:15px;line-height:1.4;padding:13px 20px;font-weight:500;transition:background .16s,border-color .16s,transform .16s}
++.operator-view .btn:hover{background:#2a2e23;border-color:#7a8366}
++.operator-view .btn:active{transform:translateY(1px)}
++.operator-view .btn.primary{color:#19200e;background:var(--studio-lime);border-color:var(--studio-lime);font-weight:650}
++.operator-view .btn.primary:hover{background:#d3e6a1}
++.operator-view .btn:disabled{opacity:1;background:#24271e;border-color:#30342a;color:#787d6a;cursor:not-allowed}
++button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);outline-offset:5px}
++#operator-setup{display:grid;grid-template-columns:minmax(260px,.85fr) minmax(360px,1.2fr);gap:0 7vw;align-items:start;min-height:600px;padding-top:36px}
++.operator-intro{grid-column:1;grid-row:1 / span 2;padding:24px 0 0}
++.operator-intro h1 em{font-weight:400;color:#b3b9a4}
++.operator-intro>p{max-width:300px;margin:0}
++.operator-edition{margin-bottom:30px!important;font-size:14px!important;color:#c3c7b7!important}
++#operator-connections{margin-top:54px;max-width:340px;display:flex;align-items:flex-start;flex-direction:column;gap:9px}
++#operator-connections .drive-state{font-size:14px;font-weight:400;color:var(--studio-muted);margin:0}
++#operator-connections .btn{font-size:14px;border-color:#45493c;padding:10px 16px}
++#operator-connections .status{font-size:13px;line-height:1.55;min-height:0;margin:0;color:var(--studio-muted)}
++#operator-connections .status.error{color:#eca297}
++#operator-sources{grid-column:2;grid-row:1;min-width:0}
++#operator-start{grid-column:2;display:flex;justify-content:flex-end;margin-top:22px}
++#operator-start .btn{min-width:190px;padding:17px 26px;font-size:16px;display:flex;align-items:center;justify-content:space-between;gap:32px}
++#operator-start .btn:after{content:"↗";font-size:22px;line-height:1}
++.operator-view .source-panel{border:0;border-radius:0;padding:0;background:transparent;margin:0;display:flex;flex-direction:column}
++.operator-view .source-panel>.panel-head{order:0;align-items:center;margin:0 0 18px;padding:0}
++.operator-view .panel-title{font:500 16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
++.operator-view #clip-count{font-size:14px;color:var(--studio-muted);font-variant-numeric:tabular-nums}
++.operator-view .source-panel .drive-actions{order:2;display:flex;justify-content:flex-end;margin:0;padding:16px 22px;background:#1b1e17;border-top:1px solid #30352a}
++.operator-view #select-files{width:auto;border:0;padding:4px 0;font-size:15px;color:var(--studio-lime);background:none}
++.operator-view #select-files:disabled{color:#72786a;cursor:not-allowed}
++.operator-view #selected-files{order:1;background:#1b1e17;min-height:300px;max-height:480px;overflow-y:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:22px;border-radius:3px 3px 0 0;counter-reset:footage}
++.operator-view #selected-files:has(>.muted){display:flex;align-items:center;justify-content:center;min-height:330px;padding:45px}
++.operator-view #selected-files>.muted{text-align:center;font-size:16px;color:#adb2a1;max-width:280px;line-height:1.65}
++.operator-view #selected-files>.muted:before{content:"＋";display:block;font-size:36px;font-weight:200;color:#a8b78c;margin:0 auto 22px;width:62px;height:62px;line-height:58px;border:1px solid #454d3a;border-radius:50%}
++.operator-view .file{display:grid;grid-template-columns:1fr auto;gap:10px;align-content:start;align-items:center;border:0;border-radius:2px;background:#282d22;padding:16px;position:relative;counter-increment:footage;min-width:0}
++.operator-view .thumb{display:flex;grid-column:1 / -1;align-items:center;justify-content:space-between;width:100%;height:70px;background:none;color:#626c55;font-size:20px;border-radius:0}
++.operator-view .thumb:before{content:counter(footage,decimal-leading-zero);font:italic 40px Georgia,serif;color:#929e7e}
++.operator-view .file-body{min-width:0}
++.operator-view .file-name{font-size:14px;font-weight:500;color:#e2e6d8}
++.operator-view .file-meta{font-size:12px;color:#929a87;margin-top:5px}
++.operator-view .remove{color:#a0aa92;width:28px;height:32px;padding:0;font-size:22px}
++.operator-view .remove:hover{color:#efb2a7}
++.operator-view .source-panel .auth{order:3;padding:22px 0 0;display:grid;grid-template-columns:1fr;gap:8px;margin:0}
++.operator-view .auth .label{font-size:14px;letter-spacing:0;color:#b2b8a5;font-weight:400}
++.operator-view .auth input{font-size:16px;color:var(--studio-text);width:100%;padding:12px 0;background:transparent;border:0;border-bottom:1px solid #4b5141;border-radius:0;margin:0}
++.operator-view .auth .status{font-size:13px;min-height:0}
++.operator-status{color:#a8b58d!important;font-size:13px!important;overflow-wrap:anywhere}
++.operator-view .source-panel>.operator-status{order:3;margin:18px 0 0;text-align:left}
++.operator-view .source-panel>.operator-status:before{content:"✓";margin-right:9px}
++#operator-processing{max-width:940px;min-height:650px;margin:0 auto;text-align:center;padding:55px 0 0;display:flex;flex-direction:column;align-items:center}
++.operator-state-caption{font-size:14px!important;letter-spacing:.03em;margin:0 0 34px!important}
++#operator-activity{max-width:900px;font-size:clamp(42px,6.3vw,88px);line-height:1.02;margin:0 auto 20px}
++#operator-explanation{order:3;max-width:480px;font-size:16px;margin:28px auto 0}
++.operator-progress-stage{order:2;width:min(100%,530px);margin:20px auto 0}
++#operator-progress-number{font:300 clamp(60px,9vw,116px)/1.1 Georgia,serif;letter-spacing:-.06em;color:var(--studio-lime);display:block;margin:0 0 32px}
++#operator-progress{display:block;width:100%;height:2px;accent-color:var(--studio-lime);border:0;background:#333a28}
++#operator-progress::-webkit-progress-bar{background:#333a28}
++#operator-progress::-webkit-progress-value{background:var(--studio-lime);transition:width .3s ease}
++#operator-progress::-moz-progress-bar{background:var(--studio-lime)}
++.operator-progress-stage:has(#operator-progress:not([value]):not([hidden])):before{content:"";display:block;width:7px;height:7px;background:var(--studio-lime);border-radius:50%;margin:32px auto;animation:studio-breathe 2.4s ease-in-out infinite}
++.operator-progress-stage:has(#operator-progress:not([value])) #operator-progress{visibility:hidden}
++.operator-progress-stage:has(#operator-progress[hidden]){display:none}
++.operator-state-actions{order:4;display:flex;align-items:center;justify-content:center;gap:24px;margin:30px 0 0}
++.operator-state-actions .operator-link{font-size:14px}
++#operator-job{order:5;font-size:12px!important;color:#656c5b!important;margin-top:60px;max-width:100%}
++#operator-processing:has(#operator-new-reel:not([hidden])) .operator-state-caption{color:var(--studio-lime)}
++#operator-diagnostics{max-width:1500px;padding-top:36px}
++#operator-diagnostics h1{font:500 30px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.02em;margin-bottom:12px}
++#operator-diagnostics h2{font-size:16px}
++#operator-diagnostics>p{font-size:14px;margin-bottom:28px}
++#operator-diagnostics .app{display:grid;grid-template-columns:minmax(0,1fr) 280px;min-height:0}
++#operator-diagnostics .main{padding:0 24px 0 0}
++#operator-diagnostics .workspace{display:block}
++#operator-diagnostics .steps{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
++#operator-diagnostics .step-name{white-space:normal;font-size:14px}
++#operator-diagnostics .rightbar{padding:0 0 0 20px}
++#operator-diagnostics pre{font-size:13px}
++.operator-log{white-space:pre-wrap;overflow-wrap:anywhere;background:#141a16;padding:20px;font:13px/1.6 ui-monospace,monospace;margin-bottom:28px}
++#operator-settings{max-width:780px;padding-top:70px}
++#operator-settings h2{font-size:18px;font-weight:500;margin-top:36px}
++#operator-settings .auth{padding:20px 0;max-width:480px}
++@keyframes studio-breathe{0%,100%{opacity:.3}50%{opacity:1}}
++@media(min-width:751px) and (max-height:850px){#operator-production{padding-top:22px}#operator-setup{padding-top:0;min-height:0}.operator-view #selected-files{min-height:220px;max-height:280px}.operator-view #selected-files:has(>.muted){min-height:230px;padding:28px}.operator-intro{padding-top:12px}#operator-connections{margin-top:32px}}
++@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
++@media(max-width:950px){.operator-view{padding-top:36px}#operator-setup{gap:0 5vw;grid-template-columns:minmax(230px,.8fr) minmax(320px,1.1fr)}.operator-header{padding:0 5vw}.operator-nav{gap:22px}.operator-brand span{display:block;margin:2px 0 0;font-size:12px}.operator-view #selected-files{padding:16px;gap:10px}.operator-view .file{padding:12px}}
++@media(max-width:750px){.operator-header{height:auto;min-height:105px;grid-template-columns:1fr auto;gap:18px;padding:24px}.operator-nav{grid-column:1;grid-row:2;gap:28px}.operator-header>.operator-link{grid-column:2;grid-row:1 / span 2}.operator-brand span{display:inline;margin-left:10px;font-size:16px}.operator-view{padding:26px 24px 50px}#operator-setup{display:flex;flex-direction:column;gap:0;padding-top:12px;min-height:0}.operator-intro{padding:0;width:100%}.operator-intro h1{max-width:540px;font-size:54px;margin-bottom:18px}.operator-edition{margin-bottom:20px!important}#operator-connections{margin:26px 0 34px;max-width:100%}#operator-sources{width:100%}#operator-start{width:100%;margin-top:22px}.operator-view #selected-files:has(>.muted){min-height:240px}.operator-view #selected-files{min-height:230px}.operator-view #selected-files>.muted:before{margin-bottom:14px}#operator-processing{padding-top:50px;min-height:560px}#operator-activity{font-size:52px}#operator-progress-number{font-size:90px}#operator-diagnostics .app{display:block}#operator-diagnostics .main{padding:0}#operator-diagnostics .rightbar{display:block;padding:20px 0;border:0}}
++@media(max-width:390px){.operator-header,.operator-view{padding-left:18px;padding-right:18px}.operator-intro h1{font-size:45px}.operator-view #selected-files{grid-template-columns:1fr}.operator-state-actions{flex-direction:column;gap:10px}}
++</style>
++<script>
++(function mountOperatorConsole(){
++  const app=document.querySelector(".app");
++  const sourcePanel=document.querySelector(".source-panel");
++  const startButton=$("start");
++  const header=document.createElement("header");
++  header.className="operator-header";
++  header.innerHTML='<div class="operator-brand">QN <span>ASTRA</span></div><nav class="operator-nav" aria-label="Main navigation"><button data-view="production" aria-current="page">Production</button><button data-view="diagnostics">Diagnostics</button></nav><button class="operator-link" data-view="settings">Settings</button>';
++  document.body.insertBefore(header,app);
++  const views={};
++  function makeView(name,content){
++    const view=document.createElement("section");
++    view.id="operator-"+name;view.className="operator-view";view.hidden=name!=="production";
++    view.innerHTML=content;document.body.insertBefore(view,app);views[name]=view;return view;
++  }
++  const production=makeView("production",'<div id="operator-setup"><div class="operator-intro"><p class="operator-edition">A new production</p><h1>Your footage.<br><em>A new story.</em></h1><p>Create a reel from the moments you captured.</p><div id="operator-connections"></div></div><div id="operator-sources"></div><div id="operator-start"></div></div><div id="operator-processing" class="operator-state" hidden aria-live="polite"><p class="operator-state-caption">Your production</p><p id="operator-job" class="operator-status"></p><h1 id="operator-activity">Preparing footage</h1><div class="operator-progress-stage"><output id="operator-progress-number" aria-hidden="true" hidden></output><progress id="operator-progress" aria-label="Reported job progress"></progress></div><p id="operator-explanation"></p><div class="operator-state-actions"><button class="operator-link" data-open="diagnostics">View diagnostics</button><button class="btn" id="operator-new-reel" hidden>Start another reel</button></div></div>');
++  const diagnostics=makeView("diagnostics",'<h1>Diagnostics</h1><p>Pipeline details and source identities for the current page. Runtime heartbeat data is not available.</p><h2>Job response</h2><pre class="operator-log" id="operator-job-json">No job response yet.</pre><div id="operator-pipeline"></div>');
++  const settings=makeView("settings",'<h1>Connections</h1><p id="operator-connection">Google Drive is not connected.</p><button class="btn" id="operator-disconnect" hidden>Disconnect Google Drive</button><h2>Control key</h2><p>The key stays in the current page. Reloading requires entering it again.</p><button class="btn" id="operator-edit-key">Edit control key</button><h2>Availability</h2><p>Final video review, approval, and publishing are not connected in this version.</p>');
++  $("operator-sources").appendChild(sourcePanel);
++  $("operator-start").appendChild(startButton);
++  startButton.textContent="Create reel";
++  $("select-files").textContent="Select source clips";
++  sourcePanel.querySelector(".panel-title").textContent="Your footage";
++  // Reposition the same connection controls; their handlers and state stay intact.
++  $("operator-connections").append($("drive-status"),$("drive-connect"),$("drive-message"));
++  app.querySelector(".sidebar").remove();
++  app.querySelector(".topbar").remove();
++  $("operator-pipeline").appendChild(app);
++  // The panels and their IDs are retained so original polling and inspection keep working.
++  diagnostics.querySelectorAll(".fact strong").forEach(el=>{
++    if(["Not connected","Awaiting agent","Awaiting Mac agent"].includes(el.textContent))el.textContent="Not reported";
++  });
++  const authInput=$("control-key");
++  const authContainer=authInput.closest(".auth");
++  const keyReady=document.createElement("p");
++  keyReady.className="operator-status";keyReady.hidden=true;keyReady.textContent="Control key ready";
++  authContainer.after(keyReady);
++  let submitted=false,latestJob=null,settled=false,requestFailed=false;
++  const initialSteps=Array.from(document.querySelectorAll("#steps .step"),el=>el.className);
++  const initialMetrics=Array.from(document.querySelectorAll(".metric strong"),el=>el.textContent);
++  const initialHeading=document.querySelector(".agent-head h2").textContent;
++  const initialDescription=document.querySelector(".agent-description").textContent;
++  function showView(name){
++    Object.entries(views).forEach(([key,el])=>{el.hidden=key!==name});
++    header.querySelectorAll("[data-view]").forEach(button=>{
++      if(button.dataset.view===name)button.setAttribute("aria-current","page");else button.removeAttribute("aria-current");
++    });
++  }
++  header.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>showView(button.dataset.view));
++  document.querySelectorAll("[data-open]").forEach(button=>button.onclick=()=>showView(button.dataset.open));
++  $("operator-edit-key").onclick=()=>{
++    if(submitted){settings.appendChild(authContainer)}else{$("operator-sources").appendChild(authContainer);showView("production")}
++    authContainer.hidden=false;keyReady.hidden=true;authInput.focus();
++  };
++  $("operator-disconnect").onclick=()=>{$("drive-connect").click();refreshConnections()};
++  function refreshConnections(){
++    const connected=!!accessToken;
++    $("drive-connect").hidden=connected;
++    $("operator-disconnect").hidden=!connected;
++    $("operator-connection").textContent=connected?"Google Drive connected.":"Google Drive is not connected.";
++    // Keep OAuth errors visible, but collapse successful setup details.
++    $("drive-message").hidden=connected&&!$("drive-message").classList.contains("error");
++    const valid=$("auth-status").textContent==="Control key valid";
++    authContainer.hidden=valid;keyReady.hidden=!valid;
++  }
++  new MutationObserver(refreshConnections).observe($("drive-status"),{childList:true,subtree:true});
++  new MutationObserver(refreshConnections).observe($("auth-status"),{childList:true,subtree:true});
++  new MutationObserver(()=>{if(!submitted)refreshConnections()}).observe($("selected-files"),{childList:true});
++  // Presentation-only enhancements read the existing controls, never the network.
++  function refreshMediaPresentation(){
++    const empty=$("selected-files").querySelector(":scope > .muted");
++    if(empty&&empty.textContent!=="Select 5–10 clips from Google Drive to begin.")empty.textContent="Select 5–10 clips from Google Drive to begin.";
++  }
++  new MutationObserver(refreshMediaPresentation).observe($("selected-files"),{childList:true});
++  refreshMediaPresentation();
++  function refreshProgressPresentation(){
++    const progress=$("operator-progress"),number=$("operator-progress-number");
++    number.hidden=progress.hidden||!progress.hasAttribute("value");
++    number.textContent=number.hidden?"":Math.round(progress.value)+"%";
++  }
++  new MutationObserver(refreshProgressPresentation).observe($("operator-progress"),{attributes:true,attributeFilter:["hidden","value","max"]});
++  // Wrap the existing handler; it remains the sole owner of requests and polling.
++  const existingStart=startButton.onclick;
++  startButton.onclick=async function(event){
++    submitted=true;settled=false;requestFailed=false;latestJob=null;
++    $("operator-setup").hidden=true;$("operator-processing").hidden=false;
++    renderOperatorState();showView("production");
++    try{await existingStart.call(this,event)}
++    finally{settled=true;requestFailed=$("message").classList.contains("error");renderOperatorState()}
++  };
++  // A read-only observer of the response already fetched by the pipeline.
++  // Keep this hook when integrating newer polling code; do not replace its handling.
++  document.addEventListener("qn:job-response",event=>{
++    const job=event.detail;
++    if(!submitted||!job||job.job_id!==activeJobId)return;
++    latestJob=job;$("operator-job-json").textContent=JSON.stringify(job,null,2);
++    renderOperatorState();
++  });
++  function operatorPhase(job){
++    const status=String(job?.status||"").toLowerCase();
++    if(requestFailed||status==="failed"||status==="error")return ["Something needs attention.","Open Diagnostics for details. Automatic retry is not available."];
++    if(status==="published")return ["Published","The job reports that publishing is complete."];
++    if(status==="approved")return ["Approved","Inspect the job in Diagnostics. Publishing controls are not connected here."];
++    if(status==="completed"||status==="complete")return ["Processing complete","Inspect the result in Diagnostics. Review controls are not connected here."];
++    const step=Number.parseInt(String(job?.step||""),10);
++    // Prefer an explicit later step to old manifests retained on the same job.
++    if(status==="rendering"||step===12)return ["Rendering final video","Waiting for rendering and verification to finish."];
++    if(step>=13)return ["Finishing up","See Diagnostics for the current checkpoint."];
++    if(step>=8)return ["Creating the reel","The plan is being prepared."];
++    if(step>=6)return ["Building the story","The footage is being shaped into a story."];
++    if(step>=3)return ["Analyzing footage","Waiting for the next pipeline update."];
++    if(status==="ready")return ["Ready for the next stage","Processing has paused at the current checkpoint. See Diagnostics for details."];
++    if(job?.shot_manifest?.shots?.length||step===2)return ["Analyzing footage","Waiting for the next pipeline update."];
++    if(["queued","claimed","downloading"].includes(status)||!job)return ["Preparing footage","Your source clips are being prepared."];
++    return ["Processing footage","Waiting for the next pipeline update. See Diagnostics for details."];
++  }
++  function renderOperatorState(){
++    if(!submitted)return;
++    const [title,description]=operatorPhase(latestJob);
++    $("operator-job").textContent=activeJobId?"Reel "+activeJobId:"";
++    $("operator-activity").textContent=title;$("operator-explanation").textContent=description;
++    const progress=$("operator-progress"),value=latestJob?.progress;
++    progress.hidden=settled||requestFailed||["failed","error","ready","completed","complete","approved","published"].includes(latestJob?.status);
++    if(typeof value==="number"&&Number.isFinite(value)){progress.max=100;progress.value=Math.max(0,Math.min(100,value))}else progress.removeAttribute("value");
++    // Do not abandon active work merely because the current poll loop timed out.
++    const terminal=["failed","error","completed","complete","published"].includes(latestJob?.status);
++    const paused=latestJob?.status==="ready";
++    $("operator-new-reel").hidden=!settled||!(terminal||paused||(requestFailed&&!activeJobId));
++  }
++  $("operator-new-reel").onclick=()=>{
++    if($("operator-new-reel").hidden)return;
++    activeJobId=null;sourceIntakeJob=null;selectedFiles.clear();
++    submitted=false;settled=false;requestFailed=false;latestJob=null;
++    sourcePanel.appendChild(authContainer);authContainer.after(keyReady);
++    renderFiles();renderJson();
++    $("shot-output").textContent=JSON.stringify(createShotDetectionOutput(manifest()),null,2);
++    $("operator-job-json").textContent="No job response yet.";
++    $("message").textContent="";$("message").className="status";
++    document.querySelectorAll("#steps .step").forEach((el,i)=>{el.className=initialSteps[i]});
++    document.querySelectorAll(".metric strong").forEach((el,i)=>{el.textContent=initialMetrics[i]});
++    document.querySelector(".agent-head h2").textContent=initialHeading;
++    document.querySelector(".agent-description").textContent=initialDescription;
++    $("operator-setup").hidden=false;$("operator-processing").hidden=true;
++    refreshConnections();showView("production");$("select-files").focus();
++  };
++  refreshConnections();
++})();
++</script>
++<script src="https://accounts.google.com/gsi/client" async defer onload="initializeGoogleOnLoad()" onerror="handleGoogleLoadError('Google Identity Services failed to load.')"></script><script src="https://apis.google.com/js/api.js" async defer onload="initializePickerOnLoad()" onerror="handleGoogleLoadError('Google Picker failed to load.')"></script></body></html>`;
+ 
+  function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } }); }
+ function authorized(request, env) { const expected = env.CONTROL_KEY || ""; return !expected || request.headers.get("x-control-key") === expected; }
+@@ -386,4 +640,3 @@
+   }
+   return json({ error: "Not found" }, 404);
+ } };
+-
