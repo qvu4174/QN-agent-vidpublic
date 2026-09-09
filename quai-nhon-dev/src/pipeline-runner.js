@@ -45,13 +45,30 @@ export function createPipelineRunner({
   const textAudioAgent = createTextAudioAgent({ analyze: textAudioAnalyze });
   const styleJudge = createQNStyleJudge({ analyze: styleJudgeAnalyze });
   const renderVerificationAgent = createRenderVerificationAgent({ analyze: renderVerificationAnalyze });
+  async function runStep2(sourceManifest) {
+    const sources = canonicalizeSources(sourceManifest);
+    sources.forEach((source, index) => {
+      if (!source.local_ready || typeof source.local_path !== "string" || !source.local_path.trim()) {
+        throw new Error(`Step 2 source at index ${index} is not locally verified.`);
+      }
+    });
+    const step2ShotArrays = await Promise.all(sources.map(source => shotDetector.detectShots(source.local_path, source.source_id)));
+    return {
+      sources,
+      shot_manifest: {
+        status: "completed",
+        input_step: "01_source_intake",
+        input_job_id: sourceManifest?.job_id ?? null,
+        shots: canonicalizeShots(step2ShotArrays.flat())
+      }
+    };
+  }
 
   return {
+    runStep2,
     async run({ sourceManifest, job_id, plan_id, render_artifact }) {
-      const sources = canonicalizeSources(sourceManifest);
-      const step2ShotArrays = await Promise.all(sources.map(source => shotDetector.detectShots(source.local_path, source.source_id)));
-      const shots = canonicalizeShots(step2ShotArrays.flat());
-      const shotManifest = { shots };
+      const { sources, shot_manifest: shotManifest } = await runStep2(sourceManifest);
+      const shots = shotManifest.shots;
 
       const [quality, visualTag, duplicate] = await Promise.all([
         qualityAgent.evaluate(shotManifest),

@@ -220,14 +220,14 @@ const PIPELINE_HTML = `<!doctype html>
   <aside class="rightbar"><section class="panel"><div class="panel-title">MACBOOK AGENT</div><div class="facts" style="margin-top:13px"><div class="fact"><span>Device name</span><strong>—</strong></div><div class="fact"><span>Status</span><strong>Not connected</strong></div><div class="fact"><span>Last heartbeat</span><strong>—</strong></div><div class="fact"><span>Drive Sync</span><strong>Awaiting agent</strong></div><div class="fact"><span>Source readiness</span><strong>Pending intake</strong></div></div></section><section class="panel"><div class="panel-title">PIPELINE SUMMARY</div><div class="metric-grid" style="margin-top:13px"><div class="metric">Total steps<strong>17</strong></div><div class="metric">Completed<strong>0</strong></div><div class="metric">In progress<strong class="green">1</strong></div><div class="metric">Pending<strong>16</strong></div><div class="metric">Failed<strong>0</strong></div><div class="metric">Progress %<strong>0%</strong></div></div></section><section class="panel"><div class="panel-title">STYLE PROFILE</div><div class="facts" style="margin-top:13px"><div class="fact"><span>Current QN style</span><strong>QN v1</strong></div><div class="fact"><span>Last updated</span><strong>—</strong></div></div><button class="btn" disabled style="width:100%;margin-top:14px">Manage Style Profile</button></section><section class="panel preview"><div class="label">NEXT STEP PREVIEW</div><span class="step-no">2/17</span><h3>Shot Detection Agent</h3><p>Tách source clip thành các shot/cảnh riêng biệt.</p><div class="json-title"><strong>STEP 2 OUTPUT</strong><span>shot_manifest.json</span></div><pre id="shot-output">{"status":"pending","input_step":"01_source_intake","input_job_id":null,"shots":[]}</pre></section></aside>
 </div>
 <script>
-const CONFIG=__QN_GOOGLE_CONFIG__,SOURCE_FOLDER_ID=CONFIG.sourceFolderId||"",TEST_LOCAL_SYNC_BYPASS=true,$=id=>document.getElementById(id),selectedFiles=new Map();let accessToken=null,tokenClient=null,pickerReady=false;
+const CONFIG=__QN_GOOGLE_CONFIG__,SOURCE_FOLDER_ID=CONFIG.sourceFolderId||"",/* TEMPORARY TEST-ONLY LOCAL SYNC BYPASS */TEST_LOCAL_SYNC_BYPASS=true,$=id=>document.getElementById(id),selectedFiles=new Map();let accessToken=null,tokenClient=null,pickerReady=false;
 const pipelineSteps=[['Source Intake Agent','active'],['Shot Detection Agent','pending'],['Quality Agent','pending'],['Visual Tag Agent','pending'],['Duplicate Agent','pending'],['Story Agent','pending'],['Shot Ranking Agent','pending'],['Sequence Agent','pending'],['Timing Agent','pending'],['Text / Audio Agent','pending'],['QN Style Judge','pending'],['Render Verification Agent','pending'],['Human Feedback Agent','pending'],['Publish Agent','pending'],['Performance Agent','pending'],['Pattern Learning Agent','pending'],['Style Memory Agent','pending']];let sourceIntakeJob=null;function createShotDetectionOutput(sourceManifest){return{status:"pending",input_step:sourceManifest.step,input_job_id:sourceManifest.job_id,shots:[]}}
 function setDriveMessage(text,error=false){$("drive-message").textContent=text;$("drive-message").className="status"+(error?" error":"")}function hasOAuth(){return !!(window.google&&google.accounts&&google.accounts.oauth2)}function initializeGoogle(){if(!CONFIG.clientId||!CONFIG.apiKey||!CONFIG.appId||!SOURCE_FOLDER_ID)throw Error("Google Drive browser configuration is incomplete.");if(!hasOAuth())throw Error("Google Identity Services is unavailable.");if(!tokenClient)tokenClient=google.accounts.oauth2.initTokenClient({client_id:CONFIG.clientId,scope:"https://www.googleapis.com/auth/drive.file",callback:handleToken,error_callback:e=>setDriveMessage(e.error_description||e.error||"Google OAuth failed.",true)});return true}function initializeGoogleOnLoad(){try{initializeGoogle();setDriveMessage("Google Drive is ready to connect.")}catch(e){setDriveMessage(e.message,true)}}function initializePickerOnLoad(){try{if(!window.gapi)throw Error("Google Picker is unavailable.");gapi.load("picker",()=>{pickerReady=true})}catch(e){setDriveMessage(e.message,true)}}function handleGoogleLoadError(message){setDriveMessage(message,true)}
 function connectGoogleDrive(){try{if(accessToken){accessToken=null;$("drive-connect").textContent="Connect Google Drive";$("select-files").disabled=true;$("drive-status").textContent="Not connected";setDriveMessage("Connect Google Drive to begin.");return}if(!tokenClient)throw Error("Google OAuth is not ready yet. Try again in a moment.");tokenClient.requestAccessToken({prompt:"consent"})}catch(e){setDriveMessage(e.message,true)}}function handleToken(response){if(response.error)return setDriveMessage(response.error_description||response.error,true);accessToken=response.access_token;$("drive-connect").textContent="Disconnect Google Drive";$("select-files").disabled=false;$("drive-status").textContent="Connected to Google Drive";setDriveMessage("Choose 5–10 video clips.")}
 function openPicker(){try{if(!accessToken)throw Error("Connect Google Drive first.");if(!pickerReady||!window.google?.picker)return setDriveMessage("Google Picker is still loading. Try again in a moment.",true);const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(SOURCE_FOLDER_ID).setMimeTypes("video/mp4,video/quicktime,video/webm,video/x-matroska");new google.picker.PickerBuilder().setAppId(CONFIG.appId).setDeveloperKey(CONFIG.apiKey).setOAuthToken(accessToken).addView(view).enableFeature(google.picker.Feature.MULTISELECT_ENABLED).setCallback(pickerCallback).build().setVisible(true)}catch(e){setDriveMessage(e.message,true)}}function pickerCallback(data){if(data.action===google.picker.Action.CANCEL)return setDriveMessage("File selection cancelled.");if(data.action===google.picker.Action.ERROR)return setDriveMessage("Google Picker returned an error. Reconnect and retry.",true);if(data.action!==google.picker.Action.PICKED)return;(data.docs||[]).forEach(file=>{if(selectedFiles.size>=10&&!selectedFiles.has(file.id))return;const name=file.name||"Untitled video",mimeType=file.mimeType||"video/mp4";selectedFiles.set(file.id,{id:file.id,name,mimeType,sizeBytes:file.sizeBytes||null})});renderFiles();createSourceIntakeJob();renderJson();$("shot-output").textContent=JSON.stringify(createShotDetectionOutput(manifest()),null,2);setDriveMessage(selectedFiles.size+" clip(s) selected.")}
 function formatSize(bytes){if(!bytes)return"—";const units=["B","KB","MB","GB"];let n=Number(bytes),i=0;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(i?1:0)+" "+units[i]}function renderFiles(){const files=[...selectedFiles.values()];$("clip-count").textContent=files.length+" / 10";$("summary-count").textContent=files.length;$("summary-size").textContent=formatSize(files.reduce((sum,file)=>sum+(Number(file.sizeBytes)||0),0))||"—";$("start").disabled=files.length<5;$("selected-files").innerHTML=files.length?files.map(file=>'<div class="file"><div class="thumb">▶</div><div class="file-body"><div class="file-name">'+escapeHtml(file.name)+'</div><div class="file-meta">'+escapeHtml(file.mimeType)+' · '+formatSize(file.sizeBytes)+' · — duration · — resolution · — fps</div></div><button class="remove" data-file-id="'+escapeHtml(file.id)+'" aria-label="Remove '+escapeHtml(file.name)+'">×</button></div>').join(""):"<div class=\\\"muted\\\">No source clips selected.</div>";$("selected-files").querySelectorAll("[data-file-id]").forEach(button=>button.onclick=()=>{selectedFiles.delete(button.dataset.fileId);renderFiles();renderJson()})}function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]))}
-function normalizeSource(file,index){return{source_id:"src_"+String(index+1).padStart(3,"0"),drive_file_id:file.id||null,drive_path:file.drivePath||null,filename:file.name||null,mime_type:file.mimeType||null,size_bytes:file.sizeBytes||null,duration_sec:file.durationSec||null,resolution:file.resolution||null,fps:file.fps||null,local_path:null,local_ready:false}}function validateSource(source){return !!(source.drive_file_id&&source.filename&&source.mime_type)}function createSourceIntakeJob(){if(!selectedFiles.size)return null;if(!sourceIntakeJob)sourceIntakeJob={job_id:crypto.randomUUID(),step:"01_source_intake",status:"active",sources:[]};sourceIntakeJob.sources=[...selectedFiles.values()].map(normalizeSource);sourceIntakeJob.status=sourceIntakeJob.sources.every(validateSource)&&sourceIntakeJob.sources.every(source=>source.local_ready)?"completed":"active";return sourceIntakeJob}function manifest(){const job=createSourceIntakeJob();return{job_id:job?job.job_id:null,step:"01_source_intake",clips:job?job.sources:[]}}function renderJson(){const value=JSON.stringify(manifest(),null,2);$("json-preview").textContent=value;$("json-output").textContent=value}function startPipeline(){$("message").textContent="Step 1 controller is not connected yet. No execution was started.";$("message").className="status"}function authHeaders(){return{"content-type":"application/json","x-control-key":$("control-key").value.trim()}}$("control-key").oninput=async()=>{const status=$("auth-status");if(!$("control-key").value.trim()){status.textContent="";return}status.textContent="Checking control key...";try{const response=await fetch("/api/auth/check",{method:"POST",headers:authHeaders()}),data=await response.json();status.textContent=data.valid?"Control key valid":"Invalid control key";status.className="status"+(data.valid?"":" error")}catch(e){status.textContent=e.message;status.className="status error"}};
-$("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;$("start").onclick=startPipeline;document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
+function normalizeSource(file,index){return{source_id:"src_"+String(index+1).padStart(3,"0"),drive_file_id:file.id||null,drive_path:file.drivePath||null,filename:file.name||null,mime_type:file.mimeType||null,size_bytes:file.sizeBytes||null,duration_sec:file.durationSec||null,resolution:file.resolution||null,fps:file.fps||null,local_path:TEST_LOCAL_SYNC_BYPASS&&file.name?"/QN_RENDER_SOURCE/"+file.name:null,local_ready:TEST_LOCAL_SYNC_BYPASS&&!!file.name}}function validateSource(source){return !!(source.drive_file_id&&source.filename&&source.mime_type)}function createSourceIntakeJob(){if(!selectedFiles.size)return null;if(!sourceIntakeJob)sourceIntakeJob={job_id:crypto.randomUUID(),step:"01_source_intake",status:"active",sources:[]};sourceIntakeJob.sources=[...selectedFiles.values()].map(normalizeSource);sourceIntakeJob.status=sourceIntakeJob.sources.every(validateSource)&&sourceIntakeJob.sources.every(source=>source.local_ready)?"completed":"active";return sourceIntakeJob}function manifest(){const job=createSourceIntakeJob();return{job_id:job?job.job_id:null,step:"01_source_intake",clips:job?job.sources:[]}}function renderJson(){const value=JSON.stringify(manifest(),null,2);$("json-preview").textContent=value;$("json-output").textContent=value}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating test job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");$("message").textContent="Test job queued: "+data.job.job_id;$("message").className="status"}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<5}}function authHeaders(){return{"content-type":"application/json","x-control-key":$("control-key").value.trim()}}$("control-key").oninput=async()=>{const status=$("auth-status");if(!$("control-key").value.trim()){status.textContent="";return}status.textContent="Checking control key...";try{const response=await fetch("/api/auth/check",{method:"POST",headers:authHeaders()}),data=await response.json();status.textContent=data.valid?"Control key valid":"Invalid control key";status.className="status"+(data.valid?"":" error")}catch(e){status.textContent=e.message;status.className="status error"}};
+$("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;let activeJobId=null;async function pollActiveJob(jobId){for(let attempt=0;attempt<120;attempt++){if(activeJobId!==jobId)return;const response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{headers:{"x-control-key":$("control-key").value.trim()}});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not read job status.");if(data.job?.job_id!==activeJobId)return;$("message").textContent="Job status: "+(data.job.status||"unknown");if(data.job.shot_manifest?.shots?.length){$("shot-output").textContent=JSON.stringify(data.job.shot_manifest,null,2);const steps=document.querySelectorAll("#steps .step");steps[0].className="step completed";steps[1].className="step completed";const metrics=document.querySelectorAll(".metric strong");metrics[1].textContent="2";metrics[2].textContent="1";metrics[3].textContent="14";metrics[5].textContent="12%";document.querySelector(".agent-head h2").textContent="3/17 Quality Agent";document.querySelector(".agent-description").textContent="Quality Agent pending.";$("message").textContent="Step 2 completed for "+activeJobId;return}if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("steps").querySelectorAll(".step")[0].className="step completed";$("message").textContent="Step 1 completed. Job: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<5}}$("start").onclick=startPipeline;document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
 </script><script src="https://accounts.google.com/gsi/client" async defer onload="initializeGoogleOnLoad()" onerror="handleGoogleLoadError('Google Identity Services failed to load.')"></script><script src="https://apis.google.com/js/api.js" async defer onload="initializePickerOnLoad()" onerror="handleGoogleLoadError('Google Picker failed to load.')"></script></body></html>`;
 
  function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } }); }
@@ -284,11 +284,99 @@ async function analyze(fileIds, driveAccessToken, env) {
   try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error("Gemini returned invalid edit-plan JSON."); }
 }
 
+const JOB_KEY_PREFIX = "qn:job:";
+const memoryJobs = new Map();
+
+function normalizeJobSources(sourceManifest) {
+  const sources = Array.isArray(sourceManifest?.sources) ? sourceManifest.sources : sourceManifest?.clips;
+  if (!Array.isArray(sources) || !sources.length) throw new Error("At least one source is required.");
+  return sources.map((source, index) => {
+    const sourceId = typeof source?.source_id === "string" && source.source_id.trim() ? source.source_id.trim() : `src_${String(index + 1).padStart(3, "0")}`;
+    const driveFileId = typeof source?.drive_file_id === "string" ? source.drive_file_id.trim() : "";
+    const filename = typeof source?.filename === "string" ? source.filename.trim() : "";
+    if (!driveFileId || !filename) throw new Error(`Source ${sourceId} is missing drive_file_id or filename.`);
+    return {
+      source_id: sourceId,
+      drive_file_id: driveFileId,
+      filename,
+      local_path: `/QN_RENDER_SOURCE/${filename}`,
+      local_ready: false
+    };
+  });
+}
+
+async function putJob(env, job) {
+  const key = JOB_KEY_PREFIX + job.job_id;
+  if (env.JOBS?.put) await env.JOBS.put(key, JSON.stringify(job));
+  else memoryJobs.set(key, job);
+}
+
+async function listJobs(env) {
+  if (!env.JOBS?.list) return [...memoryJobs.values()];
+  const listed = await env.JOBS.list({ prefix: JOB_KEY_PREFIX });
+  const jobs = await Promise.all(listed.keys.map(async key => {
+    const value = await env.JOBS.get(key.name, "json");
+    return value || null;
+  }));
+  return jobs.filter(Boolean);
+}
+
+async function createJob(request, env) {
+  let body;
+  try { body = await request.json(); } catch { throw new Error("Invalid JSON body."); }
+  const sources = normalizeJobSources(body.source_manifest || body);
+  const jobId = crypto.randomUUID();
+  const sourceManifest = { job_id: jobId, step: "01_source_intake", sources };
+  const job = { job_id: jobId, status: "queued", step: "01_source_intake", source_manifest: sourceManifest, sources, created_at: new Date().toISOString() };
+  await putJob(env, job);
+  return job;
+}
+
+async function claimNextJob(env) {
+  const jobs = (await listJobs(env)).filter(job => job.status === "queued").sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)));
+  const job = jobs[0];
+  if (!job) return null;
+  job.status = "claimed";
+  job.claimed_at = new Date().toISOString();
+  await putJob(env, job);
+  return job;
+}
+
 export default { async fetch(request, env) {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/") return new Response(renderHtml(env), { headers: { "content-type": "text/html; charset=utf-8" } });
   if (request.method === "GET" && url.pathname === "/api/health") return json({ ok: true, service: "qn-video-planner" });
   if (request.method === "POST" && url.pathname === "/api/auth/check") return json({ valid: !!env.CONTROL_KEY && request.headers.get("x-control-key") === env.CONTROL_KEY });
+  if (request.method === "POST" && url.pathname === "/api/jobs") {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    try { return json({ success: true, job: await createJob(request, env) }, 201); } catch (error) { return json({ error: error instanceof Error ? error.message : "Could not create job." }, 400); }
+  }
+  const statusMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/status$/) : null;
+  if (statusMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    const jobId = decodeURIComponent(statusMatch[1]);
+    const key = JOB_KEY_PREFIX + jobId;
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
+    if (!job) return json({ error: "Job not found" }, 404);
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest"]) {
+      if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
+    }
+    await putJob(env, job);
+    return json({ success: true, job });
+  }
+  if (request.method === "GET" && url.pathname === "/api/jobs/next") {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    try { return json({ job: await claimNextJob(env) }); } catch (error) { console.error("Job polling failed", error); return json({ error: "Could not poll jobs." }, 500); }
+  }
+  const jobMatch = request.method === "GET" ? url.pathname.match(/^\/api\/jobs\/([^/]+)$/) : null;
+  if (jobMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    const key = JOB_KEY_PREFIX + decodeURIComponent(jobMatch[1]);
+    const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
+    return job ? json({ job }) : json({ error: "Job not found" }, 404);
+  }
   if (request.method === "POST" && url.pathname === "/api/analyze") {
     if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
     let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
