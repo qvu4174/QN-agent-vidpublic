@@ -174,6 +174,12 @@ def analyze_shot(source_path, shot, backend_url, model, backend="llama_cpp"):
     try:
         parsed = json.loads(raw_response)
     except json.JSONDecodeError as exc:
+        if backend == "llama_cpp":
+            raw_preview = repr(raw_response[:1000])
+            raise VisionBackendError(
+                f"llama.cpp vision backend returned invalid analysis for shot "
+                f"{shot.get('shot_id')}; raw response (truncated): {raw_preview}"
+            ) from exc
         raise VisionBackendError(
             f"Local vision backend returned invalid analysis for shot {shot.get('shot_id')}"
         ) from exc
