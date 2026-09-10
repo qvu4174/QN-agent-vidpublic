@@ -811,6 +811,53 @@ async function analyzeTextAudio(manifests, env) {
   return normalizeTextAudioManifest(result, timingManifest);
 }
 
+function normalizeStyleJudgeManifest(result, manifests) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.criteria_results) || !Array.isArray(result.issues)) throw new Error("Gemini style judge result must contain criteria_results and issues arrays.");
+  if (result.style_judge_status !== "completed") throw new Error("Gemini style judge result must be completed.");
+  const sequenceId = manifests.sequence_manifest.sequence_id;
+  if (result.sequence_id !== sequenceId) throw new Error("Style judge output must preserve the sequence ID.");
+  if (!Number.isFinite(result.overall_score) || result.overall_score < 0 || result.overall_score > 100) throw new Error("Style judge overall score must be from 0 to 100.");
+  if (result.decision !== "pass" && result.decision !== "revise") throw new Error("Style judge decision must be pass or revise.");
+  const shotIds = new Set(manifests.sequence_manifest.ordered_shots.map(shot => shot.shot_id));
+  const cueIds = new Set([
+    ...manifests.text_audio_manifest.text_cues.map(cue => cue.cue_id),
+    ...manifests.text_audio_manifest.audio_cues.map(cue => cue.cue_id)
+  ]);
+  const criterionIds = new Set();
+  const criteriaResults = result.criteria_results.map((criterion, index) => {
+    if (!criterion || typeof criterion !== "object" || typeof criterion.score !== "number" || !Number.isFinite(criterion.score) || criterion.score < 0 || criterion.score > 100 || criterionIds.has(criterion.criterion_id)) throw new Error(`Criterion at index ${index} is invalid.`);
+    criterionIds.add(criterion.criterion_id);
+    return { criterion_id: `criterion_${String(index + 1).padStart(3, "0")}`, score: criterion.score, notes: criterion.notes ?? null };
+  });
+  const issueIds = new Set();
+  const issues = result.issues.map((issue, index) => {
+    if (!issue || typeof issue !== "object" || issueIds.has(issue.issue_id)) throw new Error(`Issue at index ${index} is invalid.`);
+    if (issue.shot_id !== null && issue.shot_id !== undefined && !shotIds.has(issue.shot_id)) throw new Error(`Issue at index ${index} references an unknown shot ID.`);
+    if (issue.cue_id !== null && issue.cue_id !== undefined && !cueIds.has(issue.cue_id)) throw new Error(`Issue at index ${index} references an unknown cue ID.`);
+    issueIds.add(issue.issue_id);
+    return { issue_id: `issue_${String(index + 1).padStart(3, "0")}`, severity: issue.severity ?? null, category: issue.category ?? null, message: issue.message ?? null, shot_id: issue.shot_id ?? null, cue_id: issue.cue_id ?? null };
+  });
+  return { style_judge_status: "completed", sequence_id: sequenceId, style_profile_id: "qn_video_v1", overall_score: result.overall_score, decision: result.decision, criteria_results: criteriaResults, issues };
+}
+
+async function analyzeStyleJudge(manifests, env) {
+  const { sequence_manifest: sequenceManifest, timing_manifest: timingManifest, text_audio_manifest: textAudioManifest } = manifests;
+  if (!manifests.story_manifest || manifests.story_manifest.status !== "completed") throw new Error("story_manifest is not completed for Step 11.");
+  if (!manifests.ranking_manifest || manifests.ranking_manifest.status !== "completed") throw new Error("ranking_manifest is not completed for Step 11.");
+  if (!manifests.quality_manifest || manifests.quality_manifest.status !== "completed" || !Array.isArray(manifests.quality_manifest.shots)) throw new Error("quality_manifest is not completed for Step 11.");
+  if (!manifests.visual_tag_manifest || manifests.visual_tag_manifest.status !== "completed" || !Array.isArray(manifests.visual_tag_manifest.shots)) throw new Error("visual_tag_manifest is not completed for Step 11.");
+  if (!sequenceManifest || sequenceManifest.sequence_status !== "completed" || typeof sequenceManifest.sequence_id !== "string") throw new Error("sequence_manifest is not completed for Step 11.");
+  if (!timingManifest || timingManifest.timing_status !== "completed") throw new Error("timing_manifest is not completed for Step 11.");
+  if (!textAudioManifest || textAudioManifest.text_audio_status !== "completed" || !Array.isArray(textAudioManifest.text_cues) || !Array.isArray(textAudioManifest.audio_cues)) throw new Error("text_audio_manifest is not completed for Step 11.");
+  const selectedIds = new Set(sequenceManifest.ordered_shots.map(shot => shot.shot_id));
+  const selectedVisual = manifests.visual_tag_manifest.shots.filter(shot => selectedIds.has(shot.shot_id));
+  const selectedQuality = manifests.quality_manifest.shots.filter(shot => selectedIds.has(shot.shot_id));
+  const judgeInput = { ...manifests, visual_tag_manifest: { ...manifests.visual_tag_manifest, shots: selectedVisual }, quality_manifest: { ...manifests.quality_manifest, shots: selectedQuality } };
+  const stylePrompt = "Judge this completed reel plan against the QN VIDEO v1 style profile below. Return a JSON object with style_judge_status set to completed, the exact sequence_id, overall_score from 0 to 100, decision pass or revise, criteria_results, and issues. Use sparse, actionable issues only. Issue shot_id values must be selected shots and issue cue_id values must be existing cues. The code will assign stable criterion and issue IDs.\n\nQN VIDEO v1 STYLE PROFILE:\n" + QN_VIDEO_INSTRUCTIONS + "\n\nCOMPLETED REEL MANIFESTS:\n" + JSON.stringify(judgeInput);
+  const result = await generateGeminiJson([{ text: stylePrompt }], env, "Gemini returned invalid style judge JSON.");
+  return normalizeStyleJudgeManifest(result, judgeInput);
+}
+
 const JOB_KEY_PREFIX = "qn:job:";
 const memoryJobs = new Map();
 

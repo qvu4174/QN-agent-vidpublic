@@ -132,6 +132,7 @@ def update_job(
     sequence_manifest=None,
     timing_manifest=None,
     text_audio_manifest=None,
+    style_judge_manifest=None,
 ):
     body = {"status": status}
 
@@ -162,6 +163,8 @@ def update_job(
         body["timing_manifest"] = timing_manifest
     if text_audio_manifest is not None:
         body["text_audio_manifest"] = text_audio_manifest
+    if style_judge_manifest is not None:
+        body["style_judge_manifest"] = style_judge_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -216,6 +219,15 @@ def request_text_audio(cfg, job_id, manifests):
     if not isinstance(text_audio_manifest, dict):
         raise RuntimeError("Text/audio endpoint returned no text/audio manifest")
     return text_audio_manifest
+
+
+def request_style_judge(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/style-judge"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    style_judge_manifest = response.get("style_judge_manifest")
+    if not isinstance(style_judge_manifest, dict):
+        raise RuntimeError("Style judge endpoint returned no style judge manifest")
+    return style_judge_manifest
 
 
 def acquire_lock(job_id):
@@ -601,9 +613,33 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "style_judging",
+            99,
+            text_audio_manifest=text_audio_manifest,
+        )
+
+        log("STEP 11: running Gemini QN style judge")
+        style_judge_manifest = request_style_judge(
+            cfg,
+            jid,
+            {
+                "story_manifest": story_manifest,
+                "ranking_manifest": ranking_manifest,
+                "sequence_manifest": sequence_manifest,
+                "timing_manifest": timing_manifest,
+                "text_audio_manifest": text_audio_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+                "quality_manifest": quality_manifest,
+            },
+        )
+        log("STEP 11 COMPLETE: style judge manifest generated")
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            text_audio_manifest=text_audio_manifest,
+            style_judge_manifest=style_judge_manifest,
         )
 
         return
