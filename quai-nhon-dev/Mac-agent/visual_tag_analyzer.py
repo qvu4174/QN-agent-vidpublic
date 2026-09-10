@@ -113,6 +113,7 @@ def _llama_cpp_response(backend_url, model, prompt, images, shot_id):
             "stream": False,
             "temperature": 0,
             "max_tokens": 220,
+            "chat_template_kwargs": {"enable_thinking": False},
         },
         shot_id,
         "llama.cpp",
@@ -130,8 +131,15 @@ def _llama_cpp_response(backend_url, model, prompt, images, shot_id):
             part.get("text", "") for part in response if isinstance(part, dict)
         )
     if not isinstance(response, str) or not response.strip():
+        finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
+        thinking_fields = {}
+        if isinstance(message, dict):
+            for field in ("reasoning", "thinking", "reasoning_content"):
+                if field in message:
+                    thinking_fields[field] = repr(str(message[field])[:1000])
         raise VisionBackendError(
             f"llama.cpp model '{model}' returned no vision content for shot {shot_id}; "
+            f"finish_reason={finish_reason!r}; thinking={thinking_fields!r}; "
             "verify the loaded model has vision capability"
         )
     return response
