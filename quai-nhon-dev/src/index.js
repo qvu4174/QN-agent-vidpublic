@@ -680,6 +680,84 @@ async function analyzeSequence(manifests, env) {
   return normalizeSequenceManifest(result, rankingManifest);
 }
 
+function normalizeTimingManifest(result, sequenceManifest, shotManifest) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.shot_timings) || !Array.isArray(result.transitions)) throw new Error("Gemini timing result must contain shot_timings and transitions arrays.");
+  if (result.timing_status !== "completed") throw new Error("Gemini timing result must be completed.");
+  const sequenceShots = sequenceManifest.ordered_shots;
+  if (result.shot_timings.length !== sequenceShots.length) throw new Error("Timing result must contain exactly the Step 8 ordered shots.");
+  if (result.transitions.length !== Math.max(0, sequenceShots.length - 1)) throw new Error("Timing result must contain one transition per adjacent shot pair.");
+  const sourceById = new Map(shotManifest.shots.map(shot => [shot.shot_id, shot]));
+  const shotTimings = result.shot_timings.map((timing, index) => {
+    const sequenceShot = sequenceShots[index];
+    if (!timing || timing.position !== sequenceShot.position || timing.shot_id !== sequenceShot.shot_id || timing.source_id !== sequenceShot.source_id) throw new Error(`Timing shot at index ${index} does not exactly match the Step 8 sequence.`);
+    const sourceShot = sourceById.get(timing.shot_id);
+    if (!sourceShot || sourceShot.source_id !== timing.source_id) throw new Error(`Timing shot at index ${index} does not match its Step 2 source.`);
+    if (!Number.isFinite(timing.source_in_sec) || !Number.isFinite(timing.use_duration_sec) || timing.use_duration_sec <= 0 || timing.source_in_sec < sourceShot.start_sec || timing.source_in_sec + timing.use_duration_sec > sourceShot.end_sec) throw new Error(`Timing shot at index ${index} exceeds its Step 2 source boundaries.`);
+    return {
+      position: timing.position,
+      shot_id: timing.shot_id,
+      source_id: timing.source_id,
+      source_in_sec: timing.source_in_sec,
+      use_duration_sec: timing.use_duration_sec
+    };
+  });
+  const transitions = result.transitions.map((transition, index) => {
+    const current = shotTimings[index];
+    const next = shotTimings[index + 1];
+    if (!transition || transition.from_shot_id !== current.shot_id || transition.to_shot_id !== next.shot_id) throw new Error(`Transition at index ${index} does not connect adjacent Step 8 shots.`);
+    if (transition.transition_type !== "cut" && transition.transition_type !== "crossfade") throw new Error(`Transition at index ${index} has an unsupported type.`);
+    const duration = transition.transition_type === "cut" ? 0 : transition.transition_duration_sec;
+    if (!Number.isFinite(duration) || duration < 0 || (transition.transition_type === "crossfade" && duration <= 0) || duration > current.use_duration_sec || duration > next.use_duration_sec) throw new Error(`Transition at index ${index} has an invalid duration.`);
+    return {
+      transition_id: `transition_${String(index + 1).padStart(3, "0")}`,
+      from_shot_id: current.shot_id,
+      to_shot_id: next.shot_id,
+      transition_type: transition.transition_type,
+      transition_duration_sec: duration
+    };
+  });
+  const timelineShots = [];
+  shotTimings.forEach((timing, index) => {
+    const previous = timelineShots[index - 1];
+    timelineShots.push({
+      ...timing,
+      timeline_start_sec: index === 0 ? 0 : previous.timeline_start_sec + previous.use_duration_sec - transitions[index - 1].transition_duration_sec
+    });
+  });
+  const finalShot = timelineShots[timelineShots.length - 1];
+  const targetDuration = finalShot.timeline_start_sec + finalShot.use_duration_sec;
+  if (!Number.isFinite(targetDuration) || targetDuration <= 0 || timelineShots.some(shot => shot.timeline_start_sec < 0)) throw new Error("Timing math produced an invalid target duration.");
+  const usedDuration = timelineShots.reduce((total, shot) => total + shot.use_duration_sec, 0);
+  const crossfadeDuration = transitions.reduce((total, transition) => total + (transition.transition_type === "crossfade" ? transition.transition_duration_sec : 0), 0);
+  if (Math.abs(targetDuration - (usedDuration - crossfadeDuration)) > 0.000001) throw new Error("Timing math produced an inconsistent final duration.");
+  return {
+    timing_status: "completed",
+    sequence_id: sequenceManifest.sequence_id,
+    target_reel_duration_sec: targetDuration,
+    shot_timings: timelineShots,
+    transitions
+  };
+}
+
+async function analyzeTiming(manifests, env) {
+  const { shot_manifest: shotManifest, story_manifest: storyManifest, ranking_manifest: rankingManifest, sequence_manifest: sequenceManifest } = manifests;
+  for (const [name, manifest] of Object.entries({
+    shot_manifest: shotManifest,
+    quality_manifest: manifests.quality_manifest,
+    visual_tag_manifest: manifests.visual_tag_manifest,
+    duplicate_manifest: manifests.duplicate_manifest,
+    ranking_manifest: rankingManifest
+  })) {
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.shots)) throw new Error(`${name} manifest is required for Step 9.`);
+    if (name !== "shot_manifest" && manifest.status !== "completed") throw new Error(`${name} manifest is not completed for Step 9.`);
+  }
+  if (!storyManifest || typeof storyManifest !== "object" || storyManifest.status !== "completed") throw new Error("story_manifest is not completed for Step 9.");
+  if (!sequenceManifest || typeof sequenceManifest !== "object" || sequenceManifest.sequence_status !== "completed" || typeof sequenceManifest.sequence_id !== "string" || !Array.isArray(sequenceManifest.ordered_shots)) throw new Error("sequence_manifest is not completed for Step 9.");
+  const timingPrompt = "Choose timing decisions for this completed Step 8 sequence using the story, ranking, and shot boundaries. Return a JSON object with timing_status set to completed, shot_timings containing exactly one object per ordered shot with position, shot_id, source_id, source_in_sec, and use_duration_sec, and transitions containing one object per adjacent pair with from_shot_id, to_shot_id, transition_type (cut or crossfade), and transition_duration_sec. Keep source trims inside Step 2 boundaries. The code will calculate timeline starts, transition IDs, and final duration.\n" + JSON.stringify(manifests);
+  const result = await generateGeminiJson([{ text: timingPrompt }], env, "Gemini returned invalid timing JSON.");
+  return normalizeTimingManifest(result, sequenceManifest, shotManifest);
+}
+
 const JOB_KEY_PREFIX = "qn:job:";
 const memoryJobs = new Map();
 

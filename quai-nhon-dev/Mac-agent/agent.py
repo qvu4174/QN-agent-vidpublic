@@ -130,6 +130,7 @@ def update_job(
     story_manifest=None,
     ranking_manifest=None,
     sequence_manifest=None,
+    timing_manifest=None,
 ):
     body = {"status": status}
 
@@ -156,6 +157,8 @@ def update_job(
         body["ranking_manifest"] = ranking_manifest
     if sequence_manifest is not None:
         body["sequence_manifest"] = sequence_manifest
+    if timing_manifest is not None:
+        body["timing_manifest"] = timing_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -192,6 +195,15 @@ def request_sequence(cfg, job_id, manifests):
     if not isinstance(sequence_manifest, dict):
         raise RuntimeError("Sequence endpoint returned no sequence manifest")
     return sequence_manifest
+
+
+def request_timing(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/timing"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    timing_manifest = response.get("timing_manifest")
+    if not isinstance(timing_manifest, dict):
+        raise RuntimeError("Timing endpoint returned no timing manifest")
+    return timing_manifest
 
 
 def acquire_lock(job_id):
@@ -532,9 +544,33 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "timing_analyzing",
+            99,
+            sequence_manifest=sequence_manifest,
+        )
+
+        log("STEP 9: running Gemini timing analysis")
+        timing_manifest = request_timing(
+            cfg,
+            jid,
+            {
+                "shot_manifest": shot_manifest,
+                "quality_manifest": quality_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+                "duplicate_manifest": duplicate_manifest,
+                "story_manifest": story_manifest,
+                "ranking_manifest": ranking_manifest,
+                "sequence_manifest": sequence_manifest,
+            },
+        )
+        log("STEP 9 COMPLETE: timing manifest generated")
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            sequence_manifest=sequence_manifest,
+            timing_manifest=timing_manifest,
         )
 
         return
