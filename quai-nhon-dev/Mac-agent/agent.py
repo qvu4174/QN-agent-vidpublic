@@ -6,7 +6,7 @@ import signal
 import ssl
 import subprocess
 import sys
-import time
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -27,6 +27,7 @@ JOBS_DIR = STATE_DIR / "jobs"
 LOG_PATH = STATE_DIR / "agent.log"
 
 RUNNING = True
+STOP_EVENT = threading.Event()
 
 
 def log(msg):
@@ -439,6 +440,7 @@ def handle_signal(signum, frame):
     global RUNNING
 
     RUNNING = False
+    STOP_EVENT.set()
     log(f"Signal {signum}; stopping")
 
 
@@ -482,7 +484,7 @@ def main():
     while RUNNING:
         if LOCK_PATH.exists():
             # Local wait only; this does not consume Worker/KV reads.
-            time.sleep(active_poll)
+            STOP_EVENT.wait(active_poll)
             continue
 
         try:
@@ -495,7 +497,7 @@ def main():
                 continue
 
             delay = backoff_delays[backoff_index]
-            time.sleep(delay)
+            STOP_EVENT.wait(delay)
 
             if backoff_index < len(backoff_delays) - 1:
                 backoff_index += 1
@@ -503,7 +505,7 @@ def main():
         except Exception as exc:
             log(f"Poll error: {exc}")
             # Avoid hammering the Worker during network/server failures.
-            time.sleep(min(idle_poll, max(active_poll, 60)))
+            STOP_EVENT.wait(min(idle_poll, max(active_poll, 60)))
 
     log("Agent stopped")
 
