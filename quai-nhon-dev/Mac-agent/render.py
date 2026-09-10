@@ -120,6 +120,14 @@ def placement(placement_hint):
     return "x=(w-text_w)/2:y=h*0.78"
 
 
+def has_drawtext_support():
+    try:
+        result = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], check=False, text=True, capture_output=True)
+    except OSError:
+        return False
+    return result.returncode == 0 and any("drawtext" in line.split() for line in result.stdout.splitlines())
+
+
 def create_clip(source_path, timing_item, output_path):
     source_in = float(timing_item["source_in_sec"])
     duration = float(timing_item["use_duration_sec"])
@@ -165,6 +173,9 @@ def assemble_video(clips, transitions, output_path):
 
 def overlay_text(video_path, cues, working_dir):
     if not cues:
+        return video_path
+    if not has_drawtext_support():
+        logging.warning("FFmpeg drawtext filter is unavailable; skipping %s text cue(s).", len(cues))
         return video_path
     filters = []
     for index, cue in enumerate(cues):
