@@ -112,6 +112,7 @@ def _llama_cpp_response(backend_url, model, prompt, images, shot_id):
             "messages": [{"role": "user", "content": content}],
             "stream": False,
             "temperature": 0,
+            "max_tokens": 220,
         },
         shot_id,
         "llama.cpp",
@@ -172,7 +173,13 @@ def analyze_shot(source_path, shot, backend_url, model, backend="llama_cpp"):
         "Describe only visible content. Do not guess names, locations, or events."
     )
     if backend == "llama_cpp":
-        raw_response = _llama_cpp_response(backend_url, model, prompt, images, shot["shot_id"])
+        llama_prompt = (
+            "Return JSON only with exactly four fields: visual_tags (array of concise strings), "
+            "primary_subject, setting, and action. Describe only visible content."
+        )
+        raw_response = _llama_cpp_response(
+            backend_url, model, llama_prompt, images, shot["shot_id"]
+        )
     elif backend == "ollama":
         raw_response = _ollama_response(backend_url, model, prompt, images, shot["shot_id"])
     else:
