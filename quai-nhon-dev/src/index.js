@@ -934,7 +934,7 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "render_artifact", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest", "sequence_manifest", "timing_manifest", "text_audio_manifest", "style_judge_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
@@ -973,6 +973,74 @@ export default { async fetch(request, env) {
     } catch (error) {
       console.error("Gemini ranking analysis failed", error);
       return json({ error: error instanceof Error ? error.message : "Gemini ranking analysis failed." }, 502);
+    }
+  }
+  const sequenceMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/sequence$/) : null;
+  if (sequenceMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const sequenceManifest = await analyzeSequence({
+        shot_manifest: body.shot_manifest,
+        quality_manifest: body.quality_manifest,
+        visual_tag_manifest: body.visual_tag_manifest,
+        duplicate_manifest: body.duplicate_manifest,
+        story_manifest: body.story_manifest,
+        ranking_manifest: body.ranking_manifest
+      }, env);
+      return json({ success: true, sequence_manifest: sequenceManifest });
+    } catch (error) {
+      console.error("Gemini sequence analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini sequence analysis failed." }, 502);
+    }
+  }
+  const timingMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/timing$/) : null;
+  if (timingMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const timingManifest = await analyzeTiming({
+        shot_manifest: body.shot_manifest,
+        quality_manifest: body.quality_manifest,
+        visual_tag_manifest: body.visual_tag_manifest,
+        duplicate_manifest: body.duplicate_manifest,
+        story_manifest: body.story_manifest,
+        ranking_manifest: body.ranking_manifest,
+        sequence_manifest: body.sequence_manifest
+      }, env);
+      return json({ success: true, timing_manifest: timingManifest });
+    } catch (error) {
+      console.error("Gemini timing analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini timing analysis failed." }, 502);
+    }
+  }
+  const textAudioMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/text-audio$/) : null;
+  if (textAudioMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const textAudioManifest = await analyzeTextAudio({
+        timing_manifest: body.timing_manifest,
+        story_manifest: body.story_manifest,
+        ranking_manifest: body.ranking_manifest,
+        visual_tag_manifest: body.visual_tag_manifest
+      }, env);
+      return json({ success: true, text_audio_manifest: textAudioManifest });
+    } catch (error) {
+      console.error("Gemini text/audio analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini text/audio analysis failed." }, 502);
+    }
+  }
+  const styleJudgeMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/style-judge$/) : null;
+  if (styleJudgeMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const styleJudgeManifest = await analyzeStyleJudge(body, env);
+      return json({ success: true, style_judge_manifest: styleJudgeManifest });
+    } catch (error) {
+      console.error("Gemini style judge analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini style judge analysis failed." }, 502);
     }
   }
   if (request.method === "GET" && url.pathname === "/api/jobs/next") {

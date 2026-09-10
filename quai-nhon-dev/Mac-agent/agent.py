@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import os
 import signal
@@ -133,6 +134,7 @@ def update_job(
     timing_manifest=None,
     text_audio_manifest=None,
     style_judge_manifest=None,
+    render_artifact=None,
 ):
     body = {"status": status}
 
@@ -165,6 +167,8 @@ def update_job(
         body["text_audio_manifest"] = text_audio_manifest
     if style_judge_manifest is not None:
         body["style_judge_manifest"] = style_judge_manifest
+    if render_artifact is not None:
+        body["render_artifact"] = render_artifact
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -338,6 +342,51 @@ def save_job(job, sources, cfg):
     )
 
     return path
+
+
+def build_reel_plan(
+    job_id,
+    sources,
+    shot_manifest,
+    quality_manifest,
+    visual_tag_manifest,
+    duplicate_manifest,
+    story_manifest,
+    ranking_manifest,
+    sequence_manifest,
+    timing_manifest,
+    text_audio_manifest,
+    style_judge_manifest,
+):
+    quality_by_key = {(shot["shot_id"], shot["source_id"]): shot for shot in quality_manifest["shots"]}
+    visual_by_key = {(shot["shot_id"], shot["source_id"]): shot for shot in visual_tag_manifest["shots"]}
+    duplicate_by_key = {(shot["shot_id"], shot["source_id"]): shot for shot in duplicate_manifest["shots"]}
+    ranking_by_key = {(shot["shot_id"], shot["source_id"]): shot for shot in ranking_manifest["shots"]}
+    shots = []
+    for shot in shot_manifest["shots"]:
+        key = (shot["shot_id"], shot["source_id"])
+        enriched = dict(shot)
+        enriched["quality"] = quality_by_key.get(key)
+        enriched["visual_tag"] = visual_by_key.get(key)
+        enriched["duplicate"] = duplicate_by_key.get(key)
+        enriched["ranking"] = ranking_by_key.get(key)
+        shots.append(enriched)
+    plan = {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "plan_id": None,
+        "sources": [dict(source) for source in sources],
+        "shots": shots,
+        "story": story_manifest,
+        "ranking": ranking_manifest,
+        "sequence": sequence_manifest,
+        "timing": timing_manifest,
+        "text_audio": text_audio_manifest,
+        "style_judge": style_judge_manifest,
+    }
+    fingerprint = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    plan["plan_id"] = "plan_" + hashlib.sha256(fingerprint).hexdigest()[:24]
+    return plan
 
 
 def run_render(cfg, job_path):
@@ -634,12 +683,45 @@ def process_job(cfg, job):
         )
         log("STEP 11 COMPLETE: style judge manifest generated")
 
+        reel_plan = build_reel_plan(
+            jid,
+            sources,
+            shot_manifest,
+            quality_manifest,
+            visual_tag_manifest,
+            duplicate_manifest,
+            story_manifest,
+            ranking_manifest,
+            sequence_manifest,
+            timing_manifest,
+            text_audio_manifest,
+            style_judge_manifest,
+        )
+        render_job = dict(job)
+        render_job["reel_plan"] = reel_plan
+        render_job_path = save_job(render_job, sources, cfg)
+
+        update_job(
+            cfg,
+            jid,
+            "rendering",
+            100,
+            style_judge_manifest=style_judge_manifest,
+        )
+
+        log("RENDER: invoking configured render script")
+        render_artifact = run_render(cfg, render_job_path)
+        render_job["render_artifact"] = render_artifact
+        save_job(render_job, sources, cfg)
+        log("RENDER COMPLETE: " + render_artifact["output_path"])
+
         update_job(
             cfg,
             jid,
             "ready",
             100,
-            style_judge_manifest=style_judge_manifest,
+            render_artifact=render_artifact,
+            output_drive_url=render_artifact.get("output_drive_url"),
         )
 
         return
