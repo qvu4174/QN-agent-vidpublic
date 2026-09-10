@@ -51,7 +51,106 @@ def _parse_response(raw, shot_id):
     }
 
 
-def analyze_shot(source_path, shot, backend_url, model):
+def _request_json(backend_url, body, shot_id, backend_name):
+    request = urllib.request.Request(
+        backend_url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace").strip()[-1000:]
+        raise VisionBackendError(
+            f"{backend_name} vision request failed for shot {shot_id} "
+            f"with HTTP {exc.code}: {detail or 'no error detail'}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise VisionBackendError(
+            f"{backend_name} vision server unavailable at {backend_url} "
+            f"for shot {shot_id}: {exc.reason}"
+        ) from exc
+    except (TimeoutError, json.JSONDecodeError) as exc:
+        raise VisionBackendError(
+            f"{backend_name} vision server returned invalid JSON for shot {shot_id}: {exc}"
+        ) from exc
+    if not isinstance(response_body, dict):
+        raise VisionBackendError(
+            f"{backend_name} vision server returned a non-object for shot {shot_id}"
+        )
+    if isinstance(response_body.get("error"), dict):
+        detail = response_body["error"].get("message") or str(response_body["error"])
+        raise VisionBackendError(
+            f"{backend_name} vision request failed for shot {shot_id}: {detail}"
+        )
+    return response_body
+
+
+def _llama_cpp_response(backend_url, model, prompt, images, shot_id):
+    content = [{"type": "text", "text": prompt}]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{image}"},
+        }
+        for image in images
+    )
+    response_body = _request_json(
+        backend_url,
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": content}],
+            "stream": False,
+            "temperature": 0,
+        },
+        shot_id,
+        "llama.cpp",
+    )
+    choices = response_body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise VisionBackendError(
+            f"llama.cpp model '{model}' returned no vision choices for shot {shot_id}; "
+            "verify the server model supports multimodal image input"
+        )
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    response = message.get("content") if isinstance(message, dict) else None
+    if isinstance(response, list):
+        response = "".join(
+            part.get("text", "") for part in response if isinstance(part, dict)
+        )
+    if not isinstance(response, str) or not response.strip():
+        raise VisionBackendError(
+            f"llama.cpp model '{model}' returned no vision content for shot {shot_id}; "
+            "verify the loaded model has vision capability"
+        )
+    return response
+
+
+def _ollama_response(backend_url, model, prompt, images, shot_id):
+    response_body = _request_json(
+        backend_url,
+        {
+            "model": model,
+            "prompt": prompt,
+            "images": images,
+            "stream": False,
+            "format": "json",
+        },
+        shot_id,
+        "Ollama",
+    )
+    response = response_body.get("response")
+    if not isinstance(response, str) or not response.strip():
+        raise VisionBackendError(
+            f"Ollama model '{model}' returned no vision response for shot {shot_id}; "
+            "verify the model supports image input"
+        )
+    return response
+
+
+def analyze_shot(source_path, shot, backend_url, model, backend="llama_cpp"):
     start_sec = float(shot["start_sec"])
     end_sec = float(shot["end_sec"])
     if end_sec <= start_sec:
@@ -64,36 +163,24 @@ def analyze_shot(source_path, shot, backend_url, model):
         "primary_subject (string), setting (string), action (string). "
         "Describe only visible content. Do not guess names, locations, or events."
     )
-    body = json.dumps({
-        "model": model,
-        "prompt": prompt,
-        "images": images,
-        "stream": False,
-        "format": "json",
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        backend_url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            response_body = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    if backend == "llama_cpp":
+        raw_response = _llama_cpp_response(backend_url, model, prompt, images, shot["shot_id"])
+    elif backend == "ollama":
+        raw_response = _ollama_response(backend_url, model, prompt, images, shot["shot_id"])
+    else:
         raise VisionBackendError(
-            f"Local vision backend unavailable for shot {shot.get('shot_id')}: {exc}"
-        ) from exc
-    if not isinstance(response_body, dict) or not isinstance(response_body.get("response"), str):
-        raise VisionBackendError(f"Local vision backend returned no response for shot {shot.get('shot_id')}")
+            f"Unsupported vision backend '{backend}'; use 'llama_cpp' or 'ollama'"
+        )
     try:
-        parsed = json.loads(response_body["response"])
+        parsed = json.loads(raw_response)
     except json.JSONDecodeError as exc:
-        raise VisionBackendError(f"Local vision backend returned invalid analysis for shot {shot.get('shot_id')}") from exc
+        raise VisionBackendError(
+            f"Local vision backend returned invalid analysis for shot {shot.get('shot_id')}"
+        ) from exc
     return _parse_response(json.dumps(parsed), shot["shot_id"])
 
 
-def build_visual_tag_manifest(shot_manifest, sources, backend_url, model):
+def build_visual_tag_manifest(shot_manifest, sources, backend_url, model, backend="llama_cpp"):
     if not isinstance(shot_manifest, dict) or not isinstance(shot_manifest.get("shots"), list):
         raise TypeError("Step 2 shot_manifest must contain a shots array.")
     source_paths = {
@@ -106,7 +193,7 @@ def build_visual_tag_manifest(shot_manifest, sources, backend_url, model):
         source_path = source_paths.get(shot.get("source_id"))
         if not source_path:
             raise ValueError(f"No resolved source for shot {shot.get('shot_id')}")
-        analysis = analyze_shot(source_path, shot, backend_url, model)
+        analysis = analyze_shot(source_path, shot, backend_url, model, backend)
         results.append({
             "shot_id": shot["shot_id"],
             "source_id": shot["source_id"],

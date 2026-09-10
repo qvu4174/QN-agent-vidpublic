@@ -1,0 +1,14 @@
+{
+  "server_url": "https://replace-with-worker.example.com",
+  "mac_agent_token": "REPLACE_WITH_MAC_AGENT_TOKEN",
+  "source_root": "~/QN_RENDER_SOURCE",
+  "output_root": "~/QN_RENDER_OUTPUT",
+  "render_script": "~/QN_RENDER/render.py",
+  "device_id": "qn-macbook-01",
+  "python_bin": "python3",
+  "active_poll_seconds": 15,
+  "idle_poll_seconds": 300,
+  "vision_backend": "llama_cpp",
+  "vision_backend_url": "http://127.0.0.1:8080/v1/chat/completions",
+  "vision_model": "REPLACE_WITH_LLAMA_CPP_VISION_MODEL"
+}

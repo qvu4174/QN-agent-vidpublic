@@ -67,8 +67,9 @@ def load_config():
     )
     cfg.setdefault("device_id", "qn-macbook-01")
     cfg.setdefault("python_bin", sys.executable)
-    cfg.setdefault("vision_backend_url", "http://127.0.0.1:11434/api/generate")
-    cfg.setdefault("vision_model", "llama3.2-vision")
+    cfg.setdefault("vision_backend", "llama_cpp")
+    cfg.setdefault("vision_backend_url", "http://127.0.0.1:8080/v1/chat/completions")
+    cfg.setdefault("vision_model", "local-vision-model")
 
     return cfg
 
@@ -396,6 +397,7 @@ def process_job(cfg, job):
             sources,
             cfg["vision_backend_url"],
             cfg["vision_model"],
+            cfg["vision_backend"],
         )
         log(
             "STEP 4 COMPLETE: "
