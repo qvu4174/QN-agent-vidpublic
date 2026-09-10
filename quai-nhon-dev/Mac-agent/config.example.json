@@ -3,7 +3,7 @@
   "mac_agent_token": "REPLACE_WITH_MAC_AGENT_TOKEN",
   "source_root": "~/QN_RENDER_SOURCE",
   "output_root": "~/QN_RENDER_OUTPUT",
-  "render_script": "~/QN_RENDER/render.py",
+  "render_script": "~/QN-Mac-Agent/render.py",
   "device_id": "qn-macbook-01",
   "python_bin": "python3",
   "active_poll_seconds": 15,
