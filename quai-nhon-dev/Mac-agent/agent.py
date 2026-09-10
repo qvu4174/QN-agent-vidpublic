@@ -128,6 +128,7 @@ def update_job(
     visual_tag_manifest=None,
     duplicate_manifest=None,
     story_manifest=None,
+    ranking_manifest=None,
 ):
     body = {"status": status}
 
@@ -150,6 +151,8 @@ def update_job(
         body["duplicate_manifest"] = duplicate_manifest
     if story_manifest is not None:
         body["story_manifest"] = story_manifest
+    if ranking_manifest is not None:
+        body["ranking_manifest"] = ranking_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -168,6 +171,15 @@ def request_story(cfg, job_id, manifests):
     if not isinstance(story_manifest, dict):
         raise RuntimeError("Story endpoint returned no story manifest")
     return story_manifest
+
+
+def request_ranking(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/ranking"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    ranking_manifest = response.get("ranking_manifest")
+    if not isinstance(ranking_manifest, dict):
+        raise RuntimeError("Ranking endpoint returned no ranking manifest")
+    return ranking_manifest
 
 
 def acquire_lock(job_id):
@@ -460,9 +472,34 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "ranking_analyzing",
+            98,
+            story_manifest=story_manifest,
+        )
+
+        log("STEP 7: running Gemini shot ranking")
+        ranking_manifest = request_ranking(
+            cfg,
+            jid,
+            {
+                "shot_manifest": shot_manifest,
+                "quality_manifest": quality_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+                "duplicate_manifest": duplicate_manifest,
+                "story_manifest": story_manifest,
+            },
+        )
+        log(
+            "STEP 7 COMPLETE: "
+            f"{len(ranking_manifest['shots'])} ranking result(s)"
+        )
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            story_manifest=story_manifest,
+            ranking_manifest=ranking_manifest,
         )
 
         return

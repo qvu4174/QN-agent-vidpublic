@@ -571,6 +571,73 @@ async function analyzeStory(manifests, env) {
   return normalizeStoryResult(result);
 }
 
+function normalizeRankingManifest(result, shotManifest) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.shots)) throw new Error("Gemini ranking result must contain a shots array.");
+  result = result.shots;
+  const expected = shotManifest.shots.map(shot => `${shot.shot_id}\u0000${shot.source_id}`);
+  if (new Set(expected).size !== expected.length) throw new Error("Step 2 contains duplicate shot identities.");
+  if (result.length !== expected.length) throw new Error("Gemini ranking result must contain exactly one result per Step 2 shot.");
+  const expectedByKey = new Map(shotManifest.shots.map(shot => [`${shot.shot_id}\u0000${shot.source_id}`, shot]));
+  const resultsByKey = new Map();
+  for (const [index, item] of result.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Ranking result at index ${index} is not an object.`);
+    if (typeof item.shot_id !== "string" || typeof item.source_id !== "string") throw new Error(`Ranking result at index ${index} is missing its identity.`);
+    const key = `${item.shot_id}\u0000${item.source_id}`;
+    if (!expectedByKey.has(key)) throw new Error(`Ranking result at index ${index} has an unknown shot identity.`);
+    if (resultsByKey.has(key)) throw new Error(`Ranking result at index ${index} duplicates a shot identity.`);
+    for (const field of ["story_relevance_score", "visual_strength_score", "ranking_score"]) {
+      if (typeof item[field] !== "number" || !Number.isFinite(item[field])) throw new Error(`Ranking result at index ${index} has an invalid ${field}.`);
+    }
+    if (typeof item.ranking_status !== "string" || !item.ranking_status.trim()) throw new Error(`Ranking result at index ${index} has an invalid ranking_status.`);
+    resultsByKey.set(key, item);
+  }
+  for (const item of result) {
+    const duplicateKey = `${item.shot_id}\u0000${item.source_id}`;
+    const duplicateShot = expectedByKey.get(duplicateKey);
+    const duplicateOf = duplicateManifestShot(shotManifest, duplicateShot);
+    if (!duplicateOf || duplicateOf === duplicateShot.shot_id) continue;
+    const canonicalShot = shotManifest.shots.find(shot => shot.shot_id === duplicateOf);
+    const canonicalResult = canonicalShot && resultsByKey.get(`${canonicalShot.shot_id}\u0000${canonicalShot.source_id}`);
+    if (!canonicalResult || item.ranking_score <= canonicalResult.ranking_score) continue;
+    const hasMetadataReason = item.story_relevance_score > canonicalResult.story_relevance_score || item.visual_strength_score > canonicalResult.visual_strength_score;
+    if (!hasMetadataReason) throw new Error(`Duplicate shot ${item.shot_id} outranks its canonical equivalent without a metadata reason.`);
+  }
+  return {
+    status: "completed",
+    input_step: "02_shot_detection",
+    input_job_id: shotManifest.input_job_id || null,
+    shots: result.map(item => ({
+      shot_id: item.shot_id,
+      source_id: item.source_id,
+      story_relevance_score: item.story_relevance_score,
+      visual_strength_score: item.visual_strength_score,
+      ranking_score: item.ranking_score,
+      ranking_status: item.ranking_status
+    }))
+  };
+}
+
+function duplicateManifestShot(shotManifest, shot) {
+  return shotManifest._duplicate_manifest?.shots?.find(item => item.shot_id === shot.shot_id)?.duplicate_of_shot_id || null;
+}
+
+async function analyzeRanking(manifests, env) {
+  const { shot_manifest: shotManifest, story_manifest: storyManifest, duplicate_manifest: duplicateManifest } = manifests;
+  for (const [name, manifest] of Object.entries({
+    shot_manifest: shotManifest,
+    quality_manifest: manifests.quality_manifest,
+    visual_tag_manifest: manifests.visual_tag_manifest,
+    duplicate_manifest: duplicateManifest
+  })) {
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.shots)) throw new Error(`${name} manifest is required for Step 7.`);
+    if (name !== "shot_manifest" && manifest.status !== "completed") throw new Error(`${name} manifest is not completed for Step 7.`);
+  }
+  if (!storyManifest || typeof storyManifest !== "object" || storyManifest.status !== "completed") throw new Error("story_manifest is not completed for Step 7.");
+  const rankingPrompt = "Rank every Step 2 shot using only these completed manifests and the Step 6 story. Return a JSON object with a shots array containing exactly one object per Step 2 shot. Each shot object must contain exactly these fields: shot_id, source_id, story_relevance_score, visual_strength_score, ranking_score, ranking_status. Scores must be numbers from 0 to 100. Preserve identities exactly. A duplicate shot must not outrank its canonical equivalent unless story relevance or visual strength in the supplied metadata clearly justifies it.\n" + JSON.stringify(manifests);
+  const result = await generateGeminiJson([{ text: rankingPrompt }], env, "Gemini returned invalid ranking JSON.");
+  return normalizeRankingManifest(result, { ...shotManifest, _duplicate_manifest: duplicateManifest });
+}
+
 const JOB_KEY_PREFIX = "qn:job:";
 const memoryJobs = new Map();
 
@@ -647,7 +714,7 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
@@ -668,6 +735,24 @@ export default { async fetch(request, env) {
     } catch (error) {
       console.error("Gemini story analysis failed", error);
       return json({ error: error instanceof Error ? error.message : "Gemini story analysis failed." }, 502);
+    }
+  }
+  const rankingMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/ranking$/) : null;
+  if (rankingMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const rankingManifest = await analyzeRanking({
+        shot_manifest: body.shot_manifest,
+        quality_manifest: body.quality_manifest,
+        visual_tag_manifest: body.visual_tag_manifest,
+        duplicate_manifest: body.duplicate_manifest,
+        story_manifest: body.story_manifest
+      }, env);
+      return json({ success: true, ranking_manifest: rankingManifest });
+    } catch (error) {
+      console.error("Gemini ranking analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini ranking analysis failed." }, 502);
     }
   }
   if (request.method === "GET" && url.pathname === "/api/jobs/next") {
