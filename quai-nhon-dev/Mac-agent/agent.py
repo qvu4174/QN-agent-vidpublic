@@ -55,7 +55,16 @@ def load_config():
         if not cfg.get(key):
             raise ValueError(f"Missing config value: {key}")
 
-    cfg.setdefault("poll_seconds", 5)
+    # Adaptive queue polling:
+    # - active: check quickly after recent job activity
+    # - idle: back off to reduce unnecessary Worker/KV reads
+    cfg.setdefault("active_poll_seconds", 15)
+    cfg.setdefault("idle_poll_seconds", 300)
+    cfg["active_poll_seconds"] = max(1, int(cfg["active_poll_seconds"]))
+    cfg["idle_poll_seconds"] = max(
+        cfg["active_poll_seconds"],
+        int(cfg["idle_poll_seconds"]),
+    )
     cfg.setdefault("device_id", "qn-macbook-01")
     cfg.setdefault("python_bin", sys.executable)
     cfg.setdefault("vision_backend_url", "http://127.0.0.1:11434/api/generate")
@@ -448,16 +457,30 @@ def main():
         f"{cfg['device_id']}"
     )
     log(f"Server: {cfg['server_url']}")
+    active_poll = cfg["active_poll_seconds"]
+    idle_poll = cfg["idle_poll_seconds"]
+
+    # After processing a job, stay responsive for a while, then progressively
+    # back off to the normal idle interval.
+    backoff_delays = [
+        active_poll,
+        min(30, idle_poll),
+        min(60, idle_poll),
+        min(120, idle_poll),
+        idle_poll,
+    ]
+    backoff_delays = list(dict.fromkeys(backoff_delays))
+    backoff_index = len(backoff_delays) - 1
+
     log(
-        f"Poll every {cfg['poll_seconds']}s "
-        "| concurrency=1"
+        f"Adaptive polling: active={active_poll}s "
+        f"| idle={idle_poll}s | concurrency=1"
     )
 
     while RUNNING:
         if LOCK_PATH.exists():
-            time.sleep(
-                cfg["poll_seconds"]
-            )
+            # Local wait only; this does not consume Worker/KV reads.
+            time.sleep(active_poll)
             continue
 
         try:
@@ -465,19 +488,20 @@ def main():
 
             if job:
                 process_job(cfg, job)
-            else:
-                time.sleep(
-                    cfg["poll_seconds"]
-                )
+                # A job just ran. Poll quickly for another queued job.
+                backoff_index = 0
+                continue
+
+            delay = backoff_delays[backoff_index]
+            time.sleep(delay)
+
+            if backoff_index < len(backoff_delays) - 1:
+                backoff_index += 1
 
         except Exception as exc:
             log(f"Poll error: {exc}")
-            time.sleep(
-                max(
-                    cfg["poll_seconds"],
-                    5,
-                )
-            )
+            # Avoid hammering the Worker during network/server failures.
+            time.sleep(min(idle_poll, max(active_poll, 60)))
 
     log("Agent stopped")
 
