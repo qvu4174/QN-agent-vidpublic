@@ -1,3 +1,5 @@
+import { createRenderVerificationAgent } from "./render-verification-agent.js";
+
 const VIDEO_MIME_TYPES = new Set([
   "video/mp4", "video/quicktime", "video/x-msvideo", "video/webm",
   "video/mpeg", "video/x-matroska", "video/3gpp", "video/3gpp2", "video/avi", "video/mp2t"
@@ -523,6 +525,21 @@ async function generateGeminiJson(parts, env, invalidMessage) {
   try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error(invalidMessage); }
 }
 
+async function verifyRenderedVideo(request, env, job, renderArtifact) {
+  if (!request.body) throw new Error("Rendered video body is required.");
+  const contentLength = Number(request.headers.get("content-length"));
+  if (!Number.isFinite(contentLength) || contentLength < 1) throw new Error("Rendered video content length is required.");
+  const fileName = request.headers.get("x-render-file-name") || "rendered-reel.mp4";
+  const mimeType = request.headers.get("content-type") || "video/mp4";
+  const geminiFile = await uploadGeminiFile(request.body, contentLength, { name: fileName, mimeType }, env);
+  const plan = job.reel_plan;
+  const parts = [{ text: "Verify the actual final rendered video against this canonical reel_plan. Inspect only the rendered video attached here; do not infer success from source clips or metadata. Check sequence and timing fidelity, missing or broken shots, black or blank frames, crop and orientation, transitions, visible text, audible audio problems when detectable, and major mismatch with the plan. Return a JSON object with render_verification_status set to completed, the exact plan_id and sequence_id, decision pass or revise, checks as concise check results, and issues as sparse actionable issues.\n\nCANONICAL REEL PLAN:\n" + JSON.stringify(plan) }];
+  parts.push({ fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } });
+  const analysis = await generateGeminiJson(parts, env, "Gemini returned invalid render verification JSON.");
+  const verifier = createRenderVerificationAgent({ analyze: async () => ({ ...analysis, plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact }) });
+  return verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact });
+}
+
 async function analyze(fileIds, driveAccessToken, env) {
   const files = [];
   for (const id of fileIds) {
@@ -962,7 +979,7 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "render_artifact", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest", "sequence_manifest", "timing_manifest", "text_audio_manifest", "style_judge_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "render_artifact", "render_verification_manifest", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest", "sequence_manifest", "timing_manifest", "text_audio_manifest", "style_judge_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
@@ -1074,6 +1091,26 @@ export default { async fetch(request, env) {
   if (request.method === "GET" && url.pathname === "/api/jobs/next") {
     if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
     try { return json({ job: await claimNextJob(env) }); } catch (error) { console.error("Job polling failed", error); return json({ error: "Could not poll jobs." }, 500); }
+  }
+  const renderVerificationMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/render-verification$/) : null;
+  if (renderVerificationMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    const key = JOB_KEY_PREFIX + decodeURIComponent(renderVerificationMatch[1]);
+    const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
+    if (!job) return json({ error: "Job not found" }, 404);
+    let renderArtifact;
+    try { renderArtifact = JSON.parse(request.headers.get("x-render-artifact") || ""); } catch { return json({ error: "Invalid render artifact" }, 400); }
+    if (!renderArtifact || JSON.stringify(renderArtifact) !== JSON.stringify(job.render_artifact)) return json({ error: "Render artifact does not match the job." }, 409);
+    try {
+      const renderVerificationManifest = await verifyRenderedVideo(request, env, job, renderArtifact);
+      job.render_verification_manifest = renderVerificationManifest;
+      job.status = "ready";
+      await putJob(env, job);
+      return json({ success: true, render_verification_manifest: renderVerificationManifest, job });
+    } catch (error) {
+      console.error("Render verification failed", error);
+      return json({ error: error instanceof Error ? error.message : "Render verification failed." }, 502);
+    }
   }
   const jobMatch = request.method === "GET" ? url.pathname.match(/^\/api\/jobs\/([^/]+)$/) : null;
   if (jobMatch) {

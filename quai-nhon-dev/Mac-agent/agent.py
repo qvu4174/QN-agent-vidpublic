@@ -135,6 +135,7 @@ def update_job(
     text_audio_manifest=None,
     style_judge_manifest=None,
     render_artifact=None,
+    render_verification_manifest=None,
 ):
     body = {"status": status}
 
@@ -169,6 +170,8 @@ def update_job(
         body["style_judge_manifest"] = style_judge_manifest
     if render_artifact is not None:
         body["render_artifact"] = render_artifact
+    if render_verification_manifest is not None:
+        body["render_verification_manifest"] = render_verification_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -232,6 +235,43 @@ def request_style_judge(cfg, job_id, manifests):
     if not isinstance(style_judge_manifest, dict):
         raise RuntimeError("Style judge endpoint returned no style judge manifest")
     return style_judge_manifest
+
+
+def request_render_verification(cfg, job_id, render_artifact, plan_id, sequence_id):
+    output_path = Path(render_artifact["output_path"])
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/render-verification"
+    headers = {
+        "x-control-key": cfg["mac_agent_token"],
+        "x-render-artifact": json.dumps(render_artifact, separators=(",", ":")),
+        "x-render-file-name": output_path.name,
+        "Content-Type": "video/mp4",
+        "Content-Length": str(output_path.stat().st_size),
+        "User-Agent": "QN-Mac-Agent/1.0",
+    }
+    try:
+        with output_path.open("rb") as stream:
+            request = urllib.request.Request(
+                url,
+                data=stream,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                request,
+                timeout=600,
+                context=ssl.create_default_context(cafile=certifi.where()),
+            ) as response:
+                result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode(errors='replace')}") from exc
+    manifest = result.get("render_verification_manifest")
+    if not isinstance(manifest, dict):
+        raise RuntimeError("Render verification endpoint returned no manifest")
+    if manifest.get("plan_id") != plan_id or manifest.get("sequence_id") != sequence_id:
+        raise RuntimeError("Render verification identity did not match the reel plan")
+    if manifest.get("render_artifact") != render_artifact:
+        raise RuntimeError("Render verification changed the render artifact")
+    return manifest
 
 
 def acquire_lock(job_id):
@@ -715,12 +755,25 @@ def process_job(cfg, job):
         save_job(render_job, sources, cfg)
         log("RENDER COMPLETE: " + render_artifact["output_path"])
 
+        log("STEP 12: uploading final render for verification")
+        render_verification_manifest = request_render_verification(
+            cfg,
+            jid,
+            render_artifact,
+            reel_plan["plan_id"],
+            reel_plan["sequence"]["sequence_id"],
+        )
+        render_job["render_verification_manifest"] = render_verification_manifest
+        save_job(render_job, sources, cfg)
+        log("STEP 12 COMPLETE: " + render_verification_manifest["decision"])
+
         update_job(
             cfg,
             jid,
             "ready",
             100,
             render_artifact=render_artifact,
+            render_verification_manifest=render_verification_manifest,
             output_drive_url=render_artifact.get("output_drive_url"),
         )
 
