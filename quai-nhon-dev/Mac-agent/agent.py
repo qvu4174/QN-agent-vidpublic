@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import ssl
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -181,12 +183,20 @@ def update_job(
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
-    return http_json(
-        "POST",
-        url,
-        cfg["mac_agent_token"],
-        body,
-    )
+    for attempt in range(1, 4):
+        try:
+            return http_json(
+                "POST",
+                url,
+                cfg["mac_agent_token"],
+                body,
+            )
+        except Exception as exc:
+            transient = isinstance(exc, (ConnectionError, TimeoutError, socket.timeout, urllib.error.URLError)) or str(exc).startswith("HTTP 5")
+            if not transient or attempt == 3:
+                raise
+            log(f"Transient Worker status sync failed (attempt {attempt}/3): {exc}; retrying")
+            time.sleep((1, 2)[attempt - 1])
 
 
 def request_story(cfg, job_id, manifests):
@@ -781,16 +791,22 @@ def process_job(cfg, job):
         save_job(render_job, sources, cfg)
         log("FINAL RENDER COMPLETE: " + render_artifact["output_path"])
 
-        update_job(
-            cfg,
-            jid,
-            "ready",
-            100,
-            verification_artifact=verification_artifact,
-            render_artifact=render_artifact,
-            render_verification_manifest=render_verification_manifest,
-            output_drive_url=render_artifact.get("output_drive_url"),
-        )
+        try:
+            update_job(
+                cfg,
+                jid,
+                "ready",
+                100,
+                verification_artifact=verification_artifact,
+                render_artifact=render_artifact,
+                render_verification_manifest=render_verification_manifest,
+                output_drive_url=render_artifact.get("output_drive_url"),
+            )
+        except Exception as sync_exc:
+            log(
+                "FINAL RENDER SUCCEEDED but ready status sync is pending: "
+                f"{sync_exc}. Preserving local job JSON and final artifact; no rerender will be attempted."
+            )
         Path(verification_artifact["output_path"]).unlink(missing_ok=True)
 
         return
