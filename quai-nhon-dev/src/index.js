@@ -516,9 +516,9 @@ async function uploadGeminiFile(stream, contentLength, file, env) {
   throw new Error("Gemini timed out while processing " + file.name + ".");
 }
 
-async function generateGeminiJson(parts, env, invalidMessage) {
+async function generateGeminiJson(parts, env, invalidMessage, generationConfig = {}) {
   if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured on the Worker.");
-  const request = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }) };
+  const request = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", ...generationConfig } }) };
   const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(env.GEMINI_MODEL || "gemini-3.7-flash") + ":generateContent?key=" + encodeURIComponent(env.GEMINI_API_KEY);
   const retryDelays = [3000, 8000];
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -883,9 +883,28 @@ async function analyzeStyleJudge(manifests, env) {
   const selectedVisual = manifests.visual_tag_manifest.shots.filter(shot => selectedIds.has(shot.shot_id));
   const selectedQuality = manifests.quality_manifest.shots.filter(shot => selectedIds.has(shot.shot_id));
   const judgeInput = { ...manifests, visual_tag_manifest: { ...manifests.visual_tag_manifest, shots: selectedVisual }, quality_manifest: { ...manifests.quality_manifest, shots: selectedQuality } };
-  const stylePrompt = "Judge this completed reel plan against the QN VIDEO v1 style profile below. Return a JSON object with style_judge_status set to completed, the exact sequence_id, overall_score from 0 to 100, decision pass or revise, criteria_results, and issues. Use sparse, actionable issues only. Issue shot_id values must be selected shots and issue cue_id values must be existing cues. The code will assign stable criterion and issue IDs.\n\nQN VIDEO v1 STYLE PROFILE:\n" + QN_VIDEO_INSTRUCTIONS + "\n\nCOMPLETED REEL MANIFESTS:\n" + JSON.stringify(judgeInput);
-  const result = await generateGeminiJson([{ text: stylePrompt }], env, "Gemini returned invalid style judge JSON.");
-  return normalizeStyleJudgeManifest(result, judgeInput);
+  const styleSchema = {
+    type: "OBJECT",
+    properties: {
+      style_judge_status: { type: "STRING", enum: ["completed"] },
+      sequence_id: { type: "STRING" },
+      overall_score: { type: "NUMBER" },
+      decision: { type: "STRING", enum: ["pass", "revise"] },
+      criteria_results: { type: "ARRAY", items: { type: "OBJECT", properties: { criterion_id: { type: "STRING" }, score: { type: "NUMBER" }, notes: { type: "STRING", nullable: true } }, required: ["criterion_id", "score", "notes"] } },
+      issues: { type: "ARRAY", items: { type: "OBJECT", properties: { issue_id: { type: "STRING" }, severity: { type: "STRING", nullable: true }, category: { type: "STRING", nullable: true }, message: { type: "STRING", nullable: true }, shot_id: { type: "STRING", nullable: true }, cue_id: { type: "STRING", nullable: true } }, required: ["issue_id", "severity", "category", "message", "shot_id", "cue_id"] } }
+    },
+    required: ["style_judge_status", "sequence_id", "overall_score", "decision", "criteria_results", "issues"]
+  };
+  const stylePrompt = "Judge this completed reel plan against the QN VIDEO v1 style profile below. Return exactly the schema requested: style_judge_status must be completed, sequence_id must be copied exactly, overall_score must be a number from 0 to 100, decision must be pass or revise, criteria_results must always be an array, and issues must always be an array (empty is valid). Use sparse, actionable issues only. Issue shot_id values must be selected shots and issue cue_id values must be existing cues. The code will assign stable criterion and issue IDs.\n\nQN VIDEO v1 STYLE PROFILE:\n" + QN_VIDEO_INSTRUCTIONS + "\n\nCOMPLETED REEL MANIFESTS:\n" + JSON.stringify(judgeInput);
+  const generationConfig = { responseSchema: styleSchema };
+  let result = await generateGeminiJson([{ text: stylePrompt }], env, "Gemini returned invalid style judge JSON.", generationConfig);
+  try {
+    return normalizeStyleJudgeManifest(result, judgeInput);
+  } catch (error) {
+    const correctivePrompt = "Your previous Step 11 response failed the required output contract. Return only a JSON object matching the provided schema. It must include style_judge_status, sequence_id, overall_score, decision, criteria_results as an array, and issues as an array; issues may be empty. Preserve the exact sequence_id and use pass or revise for decision. Do not omit any required field.\n\nORIGINAL STYLE JUDGE REQUEST:\n" + stylePrompt;
+    result = await generateGeminiJson([{ text: correctivePrompt }], env, "Gemini returned invalid style judge JSON.", generationConfig);
+    return normalizeStyleJudgeManifest(result, judgeInput);
+  }
 }
 
 const JOB_KEY_PREFIX = "qn:job:";
