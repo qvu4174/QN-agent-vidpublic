@@ -17,6 +17,7 @@ import certifi
 from step2_detector import build_shot_manifest
 from quality_analyzer import build_quality_manifest
 from visual_tag_analyzer import build_visual_tag_manifest
+from duplicate_analyzer import build_duplicate_manifest
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -125,6 +126,7 @@ def update_job(
     shot_manifest=None,
     quality_manifest=None,
     visual_tag_manifest=None,
+    duplicate_manifest=None,
 ):
     body = {"status": status}
 
@@ -143,6 +145,8 @@ def update_job(
         body["quality_manifest"] = quality_manifest
     if visual_tag_manifest is not None:
         body["visual_tag_manifest"] = visual_tag_manifest
+    if duplicate_manifest is not None:
+        body["duplicate_manifest"] = duplicate_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -408,9 +412,24 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "duplicate_analyzing",
+            90,
+            visual_tag_manifest=visual_tag_manifest,
+        )
+
+        log("STEP 5: running deterministic duplicate analysis")
+        duplicate_manifest = build_duplicate_manifest(shot_manifest, sources)
+        log(
+            "STEP 5 COMPLETE: "
+            f"{len(duplicate_manifest['shots'])} duplicate result(s)"
+        )
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            visual_tag_manifest=visual_tag_manifest,
+            duplicate_manifest=duplicate_manifest,
         )
 
         return

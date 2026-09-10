@@ -614,7 +614,7 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
