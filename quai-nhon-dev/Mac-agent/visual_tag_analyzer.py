@@ -51,6 +51,14 @@ def _parse_response(raw, shot_id):
     }
 
 
+def _strip_code_fence(raw):
+    text = raw.strip()
+    lines = text.splitlines()
+    if len(lines) < 3 or lines[0].strip().lower() not in ("```", "```json") or lines[-1].strip() != "```":
+        return text
+    return "\n".join(lines[1:-1]).strip()
+
+
 def _request_json(backend_url, body, shot_id, backend_name):
     request = urllib.request.Request(
         backend_url,
@@ -171,8 +179,9 @@ def analyze_shot(source_path, shot, backend_url, model, backend="llama_cpp"):
         raise VisionBackendError(
             f"Unsupported vision backend '{backend}'; use 'llama_cpp' or 'ollama'"
         )
+    normalized_response = _strip_code_fence(raw_response)
     try:
-        parsed = json.loads(raw_response)
+        parsed = json.loads(normalized_response)
     except json.JSONDecodeError as exc:
         if backend == "llama_cpp":
             raw_preview = repr(raw_response[:1000])
