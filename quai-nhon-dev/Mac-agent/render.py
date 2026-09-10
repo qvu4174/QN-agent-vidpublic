@@ -17,6 +17,8 @@ TARGET_HEIGHT = 1920
 FRAME_RATE = 30
 DURATION_TOLERANCE_SEC = 0.15
 PROXY_MAX_BYTES = 8 * 1024 * 1024
+MUSIC_VOLUME = 0.22
+MUSIC_FADE_SEC = 0.5
 
 
 def fail(message):
@@ -205,8 +207,50 @@ def resolve_audio_asset(cue, job_path):
     return candidate if candidate.is_file() else None
 
 
+def resolve_music_asset(selection):
+    if not isinstance(selection, dict):
+        return None
+    status = selection.get("selection_status")
+    if status == "no_selection":
+        return None
+    if status != "selected":
+        fail(f"Unsupported music selection status: {status!r}")
+    source_path = selection.get("source_path")
+    if not isinstance(source_path, str) or not source_path.strip():
+        fail("Selected music is missing source_path.")
+    project_root = Path(__file__).resolve().parent.parent
+    candidate = Path(source_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(project_root)
+    except ValueError:
+        fail(f"Selected music path is outside the project root: {source_path}")
+    if not candidate.is_file():
+        fail(f"Selected music file does not exist: {candidate}")
+    return candidate
+
+
 def add_audio(video_path, audio_path, output_path, target_duration):
     run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path), "-stream_loop", "-1", "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0", "-t", f"{target_duration:.6f}", "-c:v", "copy", "-c:a", "aac", "-af", "apad", "-shortest", str(output_path)])
+
+
+def add_music(video_path, music_path, output_path, target_duration):
+    fade_duration = min(MUSIC_FADE_SEC, target_duration / 2)
+    fade_out_start = max(0.0, target_duration - fade_duration)
+    audio_filter = ",".join([
+        f"volume={MUSIC_VOLUME:.2f}",
+        f"afade=t=in:st=0:d={fade_duration:.6f}",
+        f"afade=t=out:st={fade_out_start:.6f}:d={fade_duration:.6f}",
+    ])
+    run_command([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(video_path), "-stream_loop", "-1", "-i", str(music_path),
+        "-map", "0:v:0", "-map", "1:a:0", "-t", f"{target_duration:.6f}",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+        "-af", audio_filter, "-shortest", "-movflags", "+faststart", str(output_path),
+    ])
 
 
 def probe_duration(path):
@@ -247,6 +291,8 @@ def render(job_path, profile):
     text_audio = plan.get("text_audio") if isinstance(plan.get("text_audio"), dict) else {}
     text_cues = text_audio.get("text_cues") or []
     audio_cues = text_audio.get("audio_cues") or []
+    music_selection = text_audio.get("music_selection")
+    music_path = resolve_music_asset(music_selection)
     with tempfile.TemporaryDirectory(prefix=f"qn-render-{job_id}-") as temp_dir:
         working_dir = Path(temp_dir)
         clips = []
@@ -260,9 +306,13 @@ def render(job_path, profile):
             fail("Render transition math does not match target duration.")
         final_video = overlay_text(assembled_path, text_cues, working_dir, video_options)
         usable_audio = next((resolve_audio_asset(cue, job_path) for cue in audio_cues if resolve_audio_asset(cue, job_path)), None)
-        if audio_cues and usable_audio is None:
+        if music_path:
+            with_music = working_dir / "with_music.mp4"
+            add_music(final_video, music_path, with_music, target_duration)
+            final_video = with_music
+        elif music_selection is None and audio_cues and usable_audio is None:
             logging.warning("Audio cues contain no resolvable local asset; rendering valid video without invented audio.")
-        if usable_audio:
+        elif music_selection is None and usable_audio:
             with_audio = working_dir / "with_audio.mp4"
             add_audio(final_video, usable_audio, with_audio, target_duration)
             final_video = with_audio
