@@ -129,6 +129,7 @@ def update_job(
     duplicate_manifest=None,
     story_manifest=None,
     ranking_manifest=None,
+    sequence_manifest=None,
 ):
     body = {"status": status}
 
@@ -153,6 +154,8 @@ def update_job(
         body["story_manifest"] = story_manifest
     if ranking_manifest is not None:
         body["ranking_manifest"] = ranking_manifest
+    if sequence_manifest is not None:
+        body["sequence_manifest"] = sequence_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -180,6 +183,15 @@ def request_ranking(cfg, job_id, manifests):
     if not isinstance(ranking_manifest, dict):
         raise RuntimeError("Ranking endpoint returned no ranking manifest")
     return ranking_manifest
+
+
+def request_sequence(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/sequence"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    sequence_manifest = response.get("sequence_manifest")
+    if not isinstance(sequence_manifest, dict):
+        raise RuntimeError("Sequence endpoint returned no sequence manifest")
+    return sequence_manifest
 
 
 def acquire_lock(job_id):
@@ -497,9 +509,32 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "sequence_analyzing",
+            99,
+            ranking_manifest=ranking_manifest,
+        )
+
+        log("STEP 8: running Gemini sequence analysis")
+        sequence_manifest = request_sequence(
+            cfg,
+            jid,
+            {
+                "shot_manifest": shot_manifest,
+                "quality_manifest": quality_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+                "duplicate_manifest": duplicate_manifest,
+                "story_manifest": story_manifest,
+                "ranking_manifest": ranking_manifest,
+            },
+        )
+        log("STEP 8 COMPLETE: sequence manifest generated")
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            ranking_manifest=ranking_manifest,
+            sequence_manifest=sequence_manifest,
         )
 
         return

@@ -638,6 +638,48 @@ async function analyzeRanking(manifests, env) {
   return normalizeRankingManifest(result, { ...shotManifest, _duplicate_manifest: duplicateManifest });
 }
 
+function normalizeSequenceManifest(result, rankingManifest) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.ordered_shots)) throw new Error("Gemini sequence result must contain an ordered_shots array.");
+  if (result.sequence_status !== "completed") throw new Error("Gemini sequence result must be completed.");
+  if (!result.ordered_shots.length) throw new Error("Completed sequences require at least one ordered shot.");
+  const rankedById = new Map(rankingManifest.shots.map(shot => [shot.shot_id, shot]));
+  const seen = new Set();
+  const orderedShots = result.ordered_shots.map((shot, index) => {
+    if (!shot || typeof shot !== "object" || Array.isArray(shot)) throw new Error(`Sequence shot at index ${index} is not an object.`);
+    if (!Number.isInteger(shot.position) || shot.position !== index + 1) throw new Error(`Sequence shot at index ${index} must have contiguous position ${index + 1}.`);
+    if (typeof shot.shot_id !== "string" || typeof shot.source_id !== "string") throw new Error(`Sequence shot at index ${index} is missing its identity.`);
+    if (seen.has(shot.shot_id)) throw new Error(`Sequence shot at index ${index} duplicates its shot ID.`);
+    const rankedShot = rankedById.get(shot.shot_id);
+    if (!rankedShot) throw new Error(`Sequence shot at index ${index} is not present in the Step 7 ranking input.`);
+    if (rankedShot.source_id !== shot.source_id) throw new Error(`Sequence shot at index ${index} does not match its ranked source.`);
+    seen.add(shot.shot_id);
+    return { position: shot.position, shot_id: shot.shot_id, source_id: shot.source_id };
+  });
+  return {
+    sequence_id: `sequence_${orderedShots.map(shot => `${shot.source_id}_${shot.shot_id}`).join("__")}`,
+    ordered_shots: orderedShots,
+    sequence_status: "completed"
+  };
+}
+
+async function analyzeSequence(manifests, env) {
+  const { shot_manifest: shotManifest, story_manifest: storyManifest, ranking_manifest: rankingManifest } = manifests;
+  for (const [name, manifest] of Object.entries({
+    shot_manifest: shotManifest,
+    quality_manifest: manifests.quality_manifest,
+    visual_tag_manifest: manifests.visual_tag_manifest,
+    duplicate_manifest: manifests.duplicate_manifest,
+    ranking_manifest: rankingManifest
+  })) {
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.shots)) throw new Error(`${name} manifest is required for Step 8.`);
+    if (name !== "shot_manifest" && manifest.status !== "completed") throw new Error(`${name} manifest is not completed for Step 8.`);
+  }
+  if (!storyManifest || typeof storyManifest !== "object" || storyManifest.status !== "completed") throw new Error("story_manifest is not completed for Step 8.");
+  const sequencePrompt = "Arrange a coherent sequence using the completed Step 6 story and Step 7 ranking. You may select a subset of ranked shots. Return a JSON object with sequence_status set to completed and ordered_shots containing only position, shot_id, and source_id. Positions must start at 1 and be contiguous. Preserve ranked shot identities and sources exactly. Use only the supplied manifests; do not invent shots.\n" + JSON.stringify(manifests);
+  const result = await generateGeminiJson([{ text: sequencePrompt }], env, "Gemini returned invalid sequence JSON.");
+  return normalizeSequenceManifest(result, rankingManifest);
+}
+
 const JOB_KEY_PREFIX = "qn:job:";
 const memoryJobs = new Map();
 
