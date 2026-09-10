@@ -134,6 +134,7 @@ def update_job(
     timing_manifest=None,
     text_audio_manifest=None,
     style_judge_manifest=None,
+    reel_plan=None,
     render_artifact=None,
     render_verification_manifest=None,
 ):
@@ -168,6 +169,8 @@ def update_job(
         body["text_audio_manifest"] = text_audio_manifest
     if style_judge_manifest is not None:
         body["style_judge_manifest"] = style_judge_manifest
+    if reel_plan is not None:
+        body["reel_plan"] = reel_plan
     if render_artifact is not None:
         body["render_artifact"] = render_artifact
     if render_verification_manifest is not None:
@@ -747,6 +750,7 @@ def process_job(cfg, job):
             "rendering",
             100,
             style_judge_manifest=style_judge_manifest,
+            reel_plan=reel_plan,
         )
 
         log("RENDER: invoking configured render script")
