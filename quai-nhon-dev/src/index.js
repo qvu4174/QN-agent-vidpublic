@@ -430,15 +430,47 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
     const job=event.detail;
     if(!submitted||!job||job.job_id!==activeJobId)return;
     latestJob=job;$("operator-job-json").textContent=JSON.stringify(job,null,2);
+    renderDiagnosticsState(job);
     renderOperatorState();
   });
+  function renderDiagnosticsState(job){
+    const steps=document.querySelectorAll("#steps .step"),metrics=document.querySelectorAll(".metric strong");
+    const artifactStep=completedArtifactStep(job),hasShots=artifactStep>=2;
+    const reportedStep=Number.parseInt(String(job?.step||""),10);
+    const currentStep=Math.max(Number.isFinite(reportedStep)?reportedStep:0,artifactStep?artifactStep+1:0);
+    if(!Number.isFinite(currentStep)||currentStep<1)return;
+    steps.forEach((step,index)=>{step.className="step "+(index+1<currentStep?"completed":index+1===currentStep?"active":"pending")});
+    if(metrics.length){
+      metrics[1].textContent=String(Math.max(0,currentStep-1));
+      metrics[2].textContent=currentStep<17?"1":"0";
+      metrics[3].textContent=String(Math.max(0,17-currentStep));
+    }
+    const currentName=pipelineSteps[currentStep-1]?.[0];
+    if(currentName){
+      document.querySelector(".agent-head h2").textContent=currentStep+"/17 "+currentName;
+      document.querySelector(".agent-description").textContent=currentStep===3&&hasShots?"Quality Agent pending.":"Waiting for the next pipeline update.";
+      const preview=document.querySelector(".preview");
+      preview.querySelector(".step-no").textContent=currentStep+"/17";
+      preview.querySelector("h3").textContent=currentName;
+    }
+    if(job?.shot_manifest)$('shot-output').textContent=JSON.stringify(job.shot_manifest,null,2);
+    if(job?.quality_manifest)$('quality-output').textContent=JSON.stringify(job.quality_manifest,null,2);
+  }
+  function completedArtifactStep(job){
+    return [["shot_manifest",2],["quality_manifest",3],["visual_tag_manifest",4],["duplicate_manifest",5]].reduce((highest,[key,step])=>{
+      const manifest=job?.[key];
+      return Array.isArray(manifest?.shots)&&manifest.shots.length>0?Math.max(highest,step):highest;
+    },0);
+  }
   function operatorPhase(job){
     const status=String(job?.status||"").toLowerCase();
     if(requestFailed||status==="failed"||status==="error")return ["Something needs attention.","Open Diagnostics for details. Automatic retry is not available."];
     if(status==="published")return ["Published","The job reports that publishing is complete."];
     if(status==="approved")return ["Approved","Inspect the job in Diagnostics. Publishing controls are not connected here."];
     if(status==="completed"||status==="complete")return ["Processing complete","Inspect the result in Diagnostics. Review controls are not connected here."];
-    const step=Number.parseInt(String(job?.step||""),10);
+    const artifactStep=completedArtifactStep(job),reportedStep=Number.parseInt(String(job?.step||""),10);
+    const step=Math.max(Number.isFinite(reportedStep)?reportedStep:0,artifactStep?artifactStep+1:0);
+    if(artifactStep===2&&(!Number.isFinite(reportedStep)||reportedStep<3))return ["Footage prepared","Shot detection is complete. Quality analysis is next."];
     // Prefer an explicit later step to old manifests retained on the same job.
     if(status==="rendering"||step===12)return ["Rendering final video","Waiting for rendering and verification to finish."];
     if(step>=13)return ["Finishing up","See Diagnostics for the current checkpoint."];
