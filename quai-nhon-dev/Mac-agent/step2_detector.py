@@ -53,7 +53,7 @@ def detect_scene_times(path):
             "-i",
             str(path),
             "-vf",
-            f"select='gt(scene,{SCENE_THRESHOLD})',showinfo",
+            f"scale=320:-2,select='gt(scene,{SCENE_THRESHOLD})',showinfo",
             "-an",
             "-f",
             "null",
