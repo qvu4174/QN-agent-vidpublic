@@ -755,6 +755,15 @@ def process_job(cfg, job):
         save_job(render_job, sources, cfg)
         log("RENDER COMPLETE: " + render_artifact["output_path"])
 
+        update_job(
+            cfg,
+            jid,
+            "render_verifying",
+            100,
+            render_artifact=render_artifact,
+            output_drive_url=render_artifact.get("output_drive_url"),
+        )
+
         log("STEP 12: uploading final render for verification")
         render_verification_manifest = request_render_verification(
             cfg,
