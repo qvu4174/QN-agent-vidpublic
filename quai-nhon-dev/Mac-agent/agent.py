@@ -77,7 +77,7 @@ def load_config():
     return cfg
 
 
-def http_json(method, url, token, body=None):
+def http_json(method, url, token, body=None, timeout=30):
     data = None
 
     headers = {
@@ -100,7 +100,7 @@ def http_json(method, url, token, body=None):
     try:
         with urllib.request.urlopen(
             req,
-            timeout=30,
+            timeout=timeout,
             context=ssl.create_default_context(cafile=certifi.where()),
         ) as response:
             raw = response.read().decode("utf-8")
@@ -185,7 +185,7 @@ def update_job(
 
 def request_story(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/story"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     story_manifest = response.get("story_manifest")
     if not isinstance(story_manifest, dict):
         raise RuntimeError("Story endpoint returned no story manifest")
@@ -194,7 +194,7 @@ def request_story(cfg, job_id, manifests):
 
 def request_ranking(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/ranking"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     ranking_manifest = response.get("ranking_manifest")
     if not isinstance(ranking_manifest, dict):
         raise RuntimeError("Ranking endpoint returned no ranking manifest")
@@ -203,7 +203,7 @@ def request_ranking(cfg, job_id, manifests):
 
 def request_sequence(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/sequence"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     sequence_manifest = response.get("sequence_manifest")
     if not isinstance(sequence_manifest, dict):
         raise RuntimeError("Sequence endpoint returned no sequence manifest")
@@ -212,7 +212,7 @@ def request_sequence(cfg, job_id, manifests):
 
 def request_timing(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/timing"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     timing_manifest = response.get("timing_manifest")
     if not isinstance(timing_manifest, dict):
         raise RuntimeError("Timing endpoint returned no timing manifest")
@@ -221,7 +221,7 @@ def request_timing(cfg, job_id, manifests):
 
 def request_text_audio(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/text-audio"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     text_audio_manifest = response.get("text_audio_manifest")
     if not isinstance(text_audio_manifest, dict):
         raise RuntimeError("Text/audio endpoint returned no text/audio manifest")
@@ -230,7 +230,7 @@ def request_text_audio(cfg, job_id, manifests):
 
 def request_style_judge(cfg, job_id, manifests):
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/style-judge"
-    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests, timeout=180)
     style_judge_manifest = response.get("style_judge_manifest")
     if not isinstance(style_judge_manifest, dict):
         raise RuntimeError("Style judge endpoint returned no style judge manifest")
