@@ -135,6 +135,7 @@ def update_job(
     text_audio_manifest=None,
     style_judge_manifest=None,
     reel_plan=None,
+    verification_artifact=None,
     render_artifact=None,
     render_verification_manifest=None,
 ):
@@ -171,6 +172,8 @@ def update_job(
         body["style_judge_manifest"] = style_judge_manifest
     if reel_plan is not None:
         body["reel_plan"] = reel_plan
+    if verification_artifact is not None:
+        body["verification_artifact"] = verification_artifact
     if render_artifact is not None:
         body["render_artifact"] = render_artifact
     if render_verification_manifest is not None:
@@ -240,12 +243,12 @@ def request_style_judge(cfg, job_id, manifests):
     return style_judge_manifest
 
 
-def request_render_verification(cfg, job_id, render_artifact, plan_id, sequence_id):
-    output_path = Path(render_artifact["output_path"])
+def request_render_verification(cfg, job_id, verification_artifact, plan_id, sequence_id):
+    output_path = Path(verification_artifact["output_path"])
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/render-verification"
     headers = {
         "x-control-key": cfg["mac_agent_token"],
-        "x-render-artifact": json.dumps(render_artifact, separators=(",", ":")),
+        "x-render-artifact": json.dumps(verification_artifact, separators=(",", ":")),
         "x-render-file-name": output_path.name,
         "Content-Type": "video/mp4",
         "Content-Length": str(output_path.stat().st_size),
@@ -272,8 +275,8 @@ def request_render_verification(cfg, job_id, render_artifact, plan_id, sequence_
         raise RuntimeError("Render verification endpoint returned no manifest")
     if manifest.get("plan_id") != plan_id or manifest.get("sequence_id") != sequence_id:
         raise RuntimeError("Render verification identity did not match the reel plan")
-    if manifest.get("render_artifact") != render_artifact:
-        raise RuntimeError("Render verification changed the render artifact")
+    if manifest.get("render_artifact") != verification_artifact:
+        raise RuntimeError("Render verification changed the verification artifact")
     return manifest
 
 
@@ -432,7 +435,7 @@ def build_reel_plan(
     return plan
 
 
-def run_render(cfg, job_path):
+def run_render(cfg, job_path, profile="final"):
     script = Path(cfg["render_script"]).expanduser().resolve()
 
     if not script.exists():
@@ -443,6 +446,8 @@ def run_render(cfg, job_path):
         str(script),
         "--job",
         str(job_path),
+        "--profile",
+        profile,
     ]
 
     log("Running: " + " ".join(cmd))
@@ -744,35 +749,19 @@ def process_job(cfg, job):
         render_job["reel_plan"] = reel_plan
         render_job_path = save_job(render_job, sources, cfg)
 
-        update_job(
-            cfg,
-            jid,
-            "rendering",
-            100,
-            style_judge_manifest=style_judge_manifest,
-            reel_plan=reel_plan,
-        )
-
-        log("RENDER: invoking configured render script")
-        render_artifact = run_render(cfg, render_job_path)
-        render_job["render_artifact"] = render_artifact
+        update_job(cfg, jid, "verification_rendering", 100, style_judge_manifest=style_judge_manifest, reel_plan=reel_plan)
+        log("RENDER: invoking configured proxy render script")
+        verification_artifact = run_render(cfg, render_job_path, "proxy")
+        render_job["verification_artifact"] = verification_artifact
         save_job(render_job, sources, cfg)
-        log("RENDER COMPLETE: " + render_artifact["output_path"])
+        log("PROXY RENDER COMPLETE: " + verification_artifact["output_path"])
 
-        update_job(
-            cfg,
-            jid,
-            "render_verifying",
-            100,
-            render_artifact=render_artifact,
-            output_drive_url=render_artifact.get("output_drive_url"),
-        )
-
-        log("STEP 12: uploading final render for verification")
+        update_job(cfg, jid, "render_verifying", 100, verification_artifact=verification_artifact)
+        log("STEP 12: uploading verification proxy")
         render_verification_manifest = request_render_verification(
             cfg,
             jid,
-            render_artifact,
+            verification_artifact,
             reel_plan["plan_id"],
             reel_plan["sequence"]["sequence_id"],
         )
@@ -780,15 +769,29 @@ def process_job(cfg, job):
         save_job(render_job, sources, cfg)
         log("STEP 12 COMPLETE: " + render_verification_manifest["decision"])
 
+        update_job(cfg, jid, "review", 100, verification_artifact=verification_artifact, render_verification_manifest=render_verification_manifest)
+        if render_verification_manifest["decision"] != "pass":
+            log("STEP 12 requested revision; final render skipped")
+            return
+
+        update_job(cfg, jid, "rendering", 100)
+        log("RENDER: invoking configured final render script")
+        render_artifact = run_render(cfg, render_job_path, "final")
+        render_job["render_artifact"] = render_artifact
+        save_job(render_job, sources, cfg)
+        log("FINAL RENDER COMPLETE: " + render_artifact["output_path"])
+
         update_job(
             cfg,
             jid,
             "ready",
             100,
+            verification_artifact=verification_artifact,
             render_artifact=render_artifact,
             render_verification_manifest=render_verification_manifest,
             output_drive_url=render_artifact.get("output_drive_url"),
         )
+        Path(verification_artifact["output_path"]).unlink(missing_ok=True)
 
         return
 

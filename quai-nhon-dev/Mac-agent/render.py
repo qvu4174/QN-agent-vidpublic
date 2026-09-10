@@ -16,6 +16,7 @@ TARGET_WIDTH = 1080
 TARGET_HEIGHT = 1920
 FRAME_RATE = 30
 DURATION_TOLERANCE_SEC = 0.15
+PROXY_MAX_BYTES = 8 * 1024 * 1024
 
 
 def fail(message):
@@ -128,20 +129,20 @@ def has_drawtext_support():
     return result.returncode == 0 and any("drawtext" in line.split() for line in result.stdout.splitlines())
 
 
-def create_clip(source_path, timing_item, output_path):
+def create_clip(source_path, timing_item, output_path, width, height, video_options):
     source_in = float(timing_item["source_in_sec"])
     duration = float(timing_item["use_duration_sec"])
-    video_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p"
+    video_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},fps={FRAME_RATE},format=yuv420p"
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-ss", f"{source_in:.6f}", "-i", str(source_path), "-t", f"{duration:.6f}",
         "-map", "0:v:0", "-vf", video_filter, "-an", "-c:v", "libx264",
-        "-preset", "medium", "-crf", "18", "-movflags", "+faststart", str(output_path),
+        *video_options, "-movflags", "+faststart", str(output_path),
     ]
     run_command(command)
 
 
-def assemble_video(clips, transitions, output_path):
+def assemble_video(clips, transitions, output_path, video_options):
     inputs = []
     labels = []
     for clip in clips:
@@ -166,12 +167,12 @@ def assemble_video(clips, transitions, output_path):
             filters.append(f"[{current_label}][{next_label}]xfade=transition=fade:duration={fade_duration:.6f}:offset={offset:.6f}[{output_label}]")
             current_duration += labels[index] - fade_duration
         current_label = output_label
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current_label}]", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-r", "30", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path)]
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current_label}]", "-an", "-c:v", "libx264", *video_options, "-r", str(FRAME_RATE), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path)]
     run_command(command)
     return current_duration
 
 
-def overlay_text(video_path, cues, working_dir):
+def overlay_text(video_path, cues, working_dir, video_options):
     if not cues:
         return video_path
     if not has_drawtext_support():
@@ -191,7 +192,7 @@ def overlay_text(video_path, cues, working_dir):
     if not filters:
         return video_path
     output_path = working_dir / "text_overlay.mp4"
-    run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path), "-vf", ",".join(filters), "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-an", "-movflags", "+faststart", str(output_path)])
+    run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path), "-vf", ",".join(filters), "-c:v", "libx264", *video_options, "-an", "-movflags", "+faststart", str(output_path)])
     return output_path
 
 
@@ -216,18 +217,33 @@ def probe_duration(path):
         fail("Could not read final render duration.")
 
 
-def render(job_path):
+def decode_check(path):
+    run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path), "-f", "null", "-"])
+
+
+def render_profile(profile, target_duration):
+    if profile == "proxy":
+        bitrate = max(250_000, min(4_000_000, int(PROXY_MAX_BYTES * 8 * 0.85 / target_duration)))
+        options = ["-preset", "veryfast", "-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(bitrate * 2)]
+        return 720, 1280, options
+    return TARGET_WIDTH, TARGET_HEIGHT, ["-preset", "medium", "-crf", "18"]
+
+
+def render(job_path, profile):
     job, plan = read_job(job_path)
     selected, transitions, target_duration = validate_plan(job, plan)
-    output_root_value = job.get("output_root")
-    if not isinstance(output_root_value, str) or not output_root_value.strip():
-        fail("Job is missing output_root.")
-    output_root = Path(output_root_value).expanduser()
-    output_root.mkdir(parents=True, exist_ok=True)
     job_id = job.get("job_id")
     if not isinstance(job_id, str) or not job_id:
         fail("Job is missing job_id.")
-    output_path = output_root / f"{job_id}.mp4"
+    if profile == "proxy":
+        output_path = Path(__file__).resolve().parent / "state" / "verification" / f"{job_id}-verification.mp4"
+    else:
+        output_root_value = job.get("output_root")
+        if not isinstance(output_root_value, str) or not output_root_value.strip():
+            fail("Job is missing output_root.")
+        output_path = Path(output_root_value).expanduser() / f"{job_id}.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    width, height, video_options = render_profile(profile, target_duration)
     text_audio = plan.get("text_audio") if isinstance(plan.get("text_audio"), dict) else {}
     text_cues = text_audio.get("text_cues") or []
     audio_cues = text_audio.get("audio_cues") or []
@@ -236,13 +252,13 @@ def render(job_path):
         clips = []
         for index, (timing_item, source_path) in enumerate(selected):
             clip_path = working_dir / f"clip_{index:03d}.mp4"
-            create_clip(source_path, timing_item, clip_path)
+            create_clip(source_path, timing_item, clip_path, width, height, video_options)
             clips.append({"path": clip_path, "duration": float(timing_item["use_duration_sec"])})
         assembled_path = working_dir / "assembled.mp4"
-        assemble_duration = assemble_video(clips, transitions, assembled_path)
+        assemble_duration = assemble_video(clips, transitions, assembled_path, video_options)
         if not math.isclose(assemble_duration, target_duration, abs_tol=0.001):
             fail("Render transition math does not match target duration.")
-        final_video = overlay_text(assembled_path, text_cues, working_dir)
+        final_video = overlay_text(assembled_path, text_cues, working_dir, video_options)
         usable_audio = next((resolve_audio_asset(cue, job_path) for cue in audio_cues if resolve_audio_asset(cue, job_path)), None)
         if audio_cues and usable_audio is None:
             logging.warning("Audio cues contain no resolvable local asset; rendering valid video without invented audio.")
@@ -253,19 +269,24 @@ def render(job_path):
         shutil.copyfile(final_video, output_path)
     if not output_path.is_file() or output_path.stat().st_size == 0:
         fail("Final render output is missing or empty.")
+    if profile == "proxy" and output_path.stat().st_size > PROXY_MAX_BYTES:
+        fail(f"Proxy render exceeds {PROXY_MAX_BYTES} byte limit.")
     actual_duration = probe_duration(output_path)
     if abs(actual_duration - target_duration) > DURATION_TOLERANCE_SEC:
         fail(f"Final render duration {actual_duration:.3f}s differs from target {target_duration:.3f}s.")
+    if profile == "final":
+        decode_check(output_path)
     return output_path
 
 
 def main():
     parser = argparse.ArgumentParser(description="Render a canonical QN reel plan.")
     parser.add_argument("--job", required=True, type=Path)
+    parser.add_argument("--profile", choices=("proxy", "final"), default="final")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     try:
-        output_path = render(args.job.expanduser().resolve())
+        output_path = render(args.job.expanduser().resolve(), args.profile)
         print(json.dumps({"output_path": str(output_path), "output_drive_url": None}, separators=(",", ":")))
     except Exception as exc:
         logging.error("Render failed: %s", exc)

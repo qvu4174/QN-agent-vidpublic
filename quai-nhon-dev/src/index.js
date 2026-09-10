@@ -561,13 +561,21 @@ async function generateGeminiJson(parts, env, invalidMessage, generationConfig =
   throw new Error(fallbackResult.reason);
 }
 
+function encodeBase64(bytes) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  return btoa(binary);
+}
+
 async function verifyRenderedVideo(request, env, job, renderArtifact) {
   if (!request.body) throw new Error("Rendered video body is required.");
   const contentLength = Number(request.headers.get("content-length"));
   if (!Number.isFinite(contentLength) || contentLength < 1) throw new Error("Rendered video content length is required.");
-  const fileName = request.headers.get("x-render-file-name") || "rendered-reel.mp4";
-  const mimeType = request.headers.get("content-type") || "video/mp4";
-  const geminiFile = await uploadGeminiFile(request.body, contentLength, { name: fileName, mimeType }, env);
+  const maxInlineBytes = 12 * 1024 * 1024;
+  if (contentLength > maxInlineBytes) throw new Error("Verification proxy exceeds the inline video size limit.");
+  const videoBytes = new Uint8Array(await request.arrayBuffer());
+  if (videoBytes.length > maxInlineBytes) throw new Error("Verification proxy exceeds the inline video size limit.");
+  const inlineVideo = { mimeType: "video/mp4", data: encodeBase64(videoBytes) };
   const plan = job.reel_plan;
   const verificationSchema = {
     type: "OBJECT",
@@ -582,14 +590,14 @@ async function verifyRenderedVideo(request, env, job, renderArtifact) {
     required: ["render_verification_status", "plan_id", "sequence_id", "decision", "checks", "issues"]
   };
   const prompt = "Verify the actual final rendered video against this canonical reel_plan. Inspect only the rendered video attached here; do not infer success from source clips or metadata. Check sequence and timing fidelity, missing or broken shots, black or blank frames, crop and orientation, transitions, visible text, audible audio problems when detectable, and major mismatch with the plan. Return exactly the requested schema: render_verification_status must be completed, plan_id and sequence_id must be copied exactly, decision must be pass or revise, checks must always be an array, and issues must always be an array (empty arrays are valid). Do not include or invent render_artifact; code will preserve it.\n\nCANONICAL REEL PLAN:\n" + JSON.stringify(plan);
-  const parts = [{ text: prompt }, { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } }];
+  const parts = [{ text: prompt }, { inlineData: inlineVideo }];
   const generationConfig = { responseSchema: verificationSchema };
   const verifier = createRenderVerificationAgent({ analyze: async () => ({ ...analysis, plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact }) });
   let analysis = await generateGeminiJson(parts, env, "Gemini returned invalid render verification JSON.", generationConfig);
   try {
     return await verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact, analysis });
   } catch (error) {
-    const correctiveParts = [{ text: "Your previous Step 12 response failed the required output contract. Return only a JSON object matching the provided schema. It must include render_verification_status set to completed, the exact plan_id and sequence_id, decision pass or revise, checks as an array, and issues as an array. Empty checks and issues arrays are valid. Do not include render_artifact; code will preserve it.\n\nORIGINAL STEP 12 REQUEST:\n" + prompt }, parts[1]];
+    const correctiveParts = [{ text: "Your previous Step 12 response failed the required output contract. Return only a JSON object matching the provided schema. It must include render_verification_status set to completed, the exact plan_id and sequence_id, decision pass or revise, checks as an array, and issues as an array. Empty checks and issues arrays are valid. Do not include render_artifact; code will preserve it.\n\nORIGINAL STEP 12 REQUEST:\n" + prompt }, { inlineData: inlineVideo }];
     analysis = await generateGeminiJson(correctiveParts, env, "Gemini returned invalid render verification JSON.", generationConfig);
     return await verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact, analysis });
   }
@@ -1053,7 +1061,7 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "reel_plan", "render_artifact", "render_verification_manifest", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest", "sequence_manifest", "timing_manifest", "text_audio_manifest", "style_judge_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "reel_plan", "verification_artifact", "render_artifact", "render_verification_manifest", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest", "ranking_manifest", "sequence_manifest", "timing_manifest", "text_audio_manifest", "style_judge_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
@@ -1174,11 +1182,11 @@ export default { async fetch(request, env) {
     if (!job) return json({ error: "Job not found" }, 404);
     let renderArtifact;
     try { renderArtifact = JSON.parse(request.headers.get("x-render-artifact") || ""); } catch { return json({ error: "Invalid render artifact" }, 400); }
-    if (!renderArtifact || JSON.stringify(renderArtifact) !== JSON.stringify(job.render_artifact)) return json({ error: "Render artifact does not match the job." }, 409);
+    if (!renderArtifact || JSON.stringify(renderArtifact) !== JSON.stringify(job.verification_artifact)) return json({ error: "Verification artifact does not match the job." }, 409);
     try {
       const renderVerificationManifest = await verifyRenderedVideo(request, env, job, renderArtifact);
       job.render_verification_manifest = renderVerificationManifest;
-      job.status = "ready";
+      job.status = renderVerificationManifest.decision === "pass" ? "rendering" : "review";
       await putJob(env, job);
       return json({ success: true, render_verification_manifest: renderVerificationManifest, job });
     } catch (error) {
