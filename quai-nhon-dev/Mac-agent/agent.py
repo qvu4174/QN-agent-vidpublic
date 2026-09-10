@@ -15,6 +15,8 @@ from pathlib import Path
 import certifi
 
 from step2_detector import build_shot_manifest
+from quality_analyzer import build_quality_manifest
+from visual_tag_analyzer import build_visual_tag_manifest
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -56,6 +58,8 @@ def load_config():
     cfg.setdefault("poll_seconds", 5)
     cfg.setdefault("device_id", "qn-macbook-01")
     cfg.setdefault("python_bin", sys.executable)
+    cfg.setdefault("vision_backend_url", "http://127.0.0.1:11434/api/generate")
+    cfg.setdefault("vision_model", "llama3.2-vision")
 
     return cfg
 
@@ -108,6 +112,8 @@ def update_job(
     error=None,
     output_drive_url=None,
     shot_manifest=None,
+    quality_manifest=None,
+    visual_tag_manifest=None,
 ):
     body = {"status": status}
 
@@ -122,6 +128,10 @@ def update_job(
 
     if shot_manifest is not None:
         body["shot_manifest"] = shot_manifest
+    if quality_manifest is not None:
+        body["quality_manifest"] = quality_manifest
+    if visual_tag_manifest is not None:
+        body["visual_tag_manifest"] = visual_tag_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -351,9 +361,44 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "quality_analyzing",
+            60,
+            shot_manifest=shot_manifest,
+        )
+
+        log("STEP 3: running deterministic quality analysis")
+        quality_manifest = build_quality_manifest(shot_manifest, sources)
+        log(
+            "STEP 3 COMPLETE: "
+            f"{len(quality_manifest['shots'])} quality result(s)"
+        )
+
+        update_job(
+            cfg,
+            jid,
+            "visual_tag_analyzing",
+            80,
+            quality_manifest=quality_manifest,
+        )
+
+        log("STEP 4: running local vision tagging")
+        visual_tag_manifest = build_visual_tag_manifest(
+            shot_manifest,
+            sources,
+            cfg["vision_backend_url"],
+            cfg["vision_model"],
+        )
+        log(
+            "STEP 4 COMPLETE: "
+            f"{len(visual_tag_manifest['shots'])} visual tag result(s)"
+        )
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            shot_manifest=shot_manifest,
+            visual_tag_manifest=visual_tag_manifest,
         )
 
         return
