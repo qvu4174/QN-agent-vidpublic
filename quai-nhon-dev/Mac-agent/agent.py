@@ -131,6 +131,7 @@ def update_job(
     ranking_manifest=None,
     sequence_manifest=None,
     timing_manifest=None,
+    text_audio_manifest=None,
 ):
     body = {"status": status}
 
@@ -159,6 +160,8 @@ def update_job(
         body["sequence_manifest"] = sequence_manifest
     if timing_manifest is not None:
         body["timing_manifest"] = timing_manifest
+    if text_audio_manifest is not None:
+        body["text_audio_manifest"] = text_audio_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -204,6 +207,15 @@ def request_timing(cfg, job_id, manifests):
     if not isinstance(timing_manifest, dict):
         raise RuntimeError("Timing endpoint returned no timing manifest")
     return timing_manifest
+
+
+def request_text_audio(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/text-audio"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    text_audio_manifest = response.get("text_audio_manifest")
+    if not isinstance(text_audio_manifest, dict):
+        raise RuntimeError("Text/audio endpoint returned no text/audio manifest")
+    return text_audio_manifest
 
 
 def acquire_lock(job_id):
@@ -568,9 +580,30 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "text_audio_analyzing",
+            99,
+            timing_manifest=timing_manifest,
+        )
+
+        log("STEP 10: running Gemini text/audio analysis")
+        text_audio_manifest = request_text_audio(
+            cfg,
+            jid,
+            {
+                "timing_manifest": timing_manifest,
+                "story_manifest": story_manifest,
+                "ranking_manifest": ranking_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+            },
+        )
+        log("STEP 10 COMPLETE: text/audio manifest generated")
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            timing_manifest=timing_manifest,
+            text_audio_manifest=text_audio_manifest,
         )
 
         return

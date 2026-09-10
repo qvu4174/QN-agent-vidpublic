@@ -758,6 +758,59 @@ async function analyzeTiming(manifests, env) {
   return normalizeTimingManifest(result, sequenceManifest, shotManifest);
 }
 
+function normalizeTextAudioManifest(result, timingManifest) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.text_cues) || !Array.isArray(result.audio_cues)) throw new Error("Gemini text/audio result must contain text_cues and audio_cues arrays.");
+  if (result.text_audio_status !== "completed") throw new Error("Gemini text/audio result must be completed.");
+  if (result.sequence_id !== timingManifest.sequence_id) throw new Error("Text/audio output must preserve the Step 9 sequence ID.");
+  const targetDuration = timingManifest.target_reel_duration_sec;
+  const shotIds = new Set((timingManifest.shot_timings || []).map(timing => timing.shot_id));
+  if (!Number.isFinite(targetDuration) || targetDuration < 0) throw new Error("Timing manifest has an invalid target duration.");
+  const cueIds = new Set();
+  function normalizeCue(cue, index, type) {
+    if (!cue || typeof cue !== "object" || Array.isArray(cue)) throw new Error(`${type} cue at index ${index} is not an object.`);
+    if (cue.shot_id !== null && cue.shot_id !== undefined && !shotIds.has(cue.shot_id)) throw new Error(`${type} cue at index ${index} references an unknown shot ID.`);
+    if (!Number.isFinite(cue.timeline_start_sec) || !Number.isFinite(cue.timeline_end_sec) || cue.timeline_start_sec < 0 || cue.timeline_end_sec < cue.timeline_start_sec || cue.timeline_end_sec > targetDuration) throw new Error(`${type} cue at index ${index} has an invalid timeline range.`);
+    const cueId = `${type.toLowerCase()}_cue_${String(index + 1).padStart(3, "0")}`;
+    if (cueIds.has(cueId)) throw new Error(`Cue IDs must be unique: ${cueId}`);
+    cueIds.add(cueId);
+    return type === "text" ? {
+      cue_id: cueId,
+      shot_id: cue.shot_id ?? null,
+      text: cue.text ?? null,
+      language: cue.language ?? null,
+      timeline_start_sec: cue.timeline_start_sec,
+      timeline_end_sec: cue.timeline_end_sec,
+      placement_hint: cue.placement_hint ?? null
+    } : {
+      cue_id: cueId,
+      audio_type: cue.audio_type ?? null,
+      shot_id: cue.shot_id ?? null,
+      asset_ref: cue.asset_ref ?? null,
+      script: cue.script ?? null,
+      timeline_start_sec: cue.timeline_start_sec,
+      timeline_end_sec: cue.timeline_end_sec,
+      gain_db: cue.gain_db ?? null
+    };
+  }
+  return {
+    text_audio_status: "completed",
+    sequence_id: timingManifest.sequence_id,
+    text_cues: result.text_cues.map((cue, index) => normalizeCue(cue, index, "text")),
+    audio_cues: result.audio_cues.map((cue, index) => normalizeCue(cue, index, "audio"))
+  };
+}
+
+async function analyzeTextAudio(manifests, env) {
+  const { timing_manifest: timingManifest, story_manifest: storyManifest, ranking_manifest: rankingManifest, visual_tag_manifest: visualTagManifest } = manifests;
+  if (!timingManifest || typeof timingManifest !== "object" || timingManifest.timing_status !== "completed" || !Array.isArray(timingManifest.shot_timings)) throw new Error("timing_manifest is not completed for Step 10.");
+  if (!storyManifest || storyManifest.status !== "completed") throw new Error("story_manifest is not completed for Step 10.");
+  if (!rankingManifest || rankingManifest.status !== "completed" || !Array.isArray(rankingManifest.shots)) throw new Error("ranking_manifest is not completed for Step 10.");
+  if (!visualTagManifest || visualTagManifest.status !== "completed" || !Array.isArray(visualTagManifest.shots)) throw new Error("visual_tag_manifest is not completed for Step 10.");
+  const textAudioPrompt = "Create sparse text and audio cues for this completed Step 9 timing. Support the footage; do not add text to every shot. Return a JSON object with text_audio_status set to completed, the exact sequence_id, text_cues, and audio_cues. Cue ranges must stay within the target duration and cue shot_id values must reference the timed shots; empty arrays are valid. Text cue fields: shot_id, text, language, timeline_start_sec, timeline_end_sec, placement_hint. Audio cue fields: audio_type, shot_id, asset_ref, script, timeline_start_sec, timeline_end_sec, gain_db.\n" + JSON.stringify(manifests);
+  const result = await generateGeminiJson([{ text: textAudioPrompt }], env, "Gemini returned invalid text/audio JSON.");
+  return normalizeTextAudioManifest(result, timingManifest);
+}
+
 const JOB_KEY_PREFIX = "qn:job:";
 const memoryJobs = new Map();
 
