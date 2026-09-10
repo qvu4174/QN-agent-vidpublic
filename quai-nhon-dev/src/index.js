@@ -859,7 +859,9 @@ async function analyzeStyleJudge(manifests, env) {
 }
 
 const JOB_KEY_PREFIX = "qn:job:";
+const PENDING_JOBS_KEY = "qn:pending-jobs";
 const memoryJobs = new Map();
+let memoryPendingJobs = [];
 
 function normalizeJobSources(sourceManifest) {
   const sources = Array.isArray(sourceManifest?.sources) ? sourceManifest.sources : sourceManifest?.clips;
@@ -885,6 +887,23 @@ async function putJob(env, job) {
   else memoryJobs.set(key, job);
 }
 
+async function readPendingJobIds(env) {
+  if (!env.JOBS?.get) return [...memoryPendingJobs];
+  const pendingJobIds = await env.JOBS.get(PENDING_JOBS_KEY, "json");
+  return Array.isArray(pendingJobIds) ? pendingJobIds.filter(jobId => typeof jobId === "string" && jobId) : [];
+}
+
+async function writePendingJobIds(env, pendingJobIds) {
+  if (env.JOBS?.put) await env.JOBS.put(PENDING_JOBS_KEY, JSON.stringify(pendingJobIds));
+  else memoryPendingJobs = pendingJobIds;
+}
+
+async function enqueuePendingJob(env, jobId) {
+  const pendingJobIds = await readPendingJobIds(env);
+  if (!pendingJobIds.includes(jobId)) pendingJobIds.push(jobId);
+  await writePendingJobIds(env, pendingJobIds);
+}
+
 async function listJobs(env) {
   if (!env.JOBS?.list) return [...memoryJobs.values()];
   const listed = await env.JOBS.list({ prefix: JOB_KEY_PREFIX });
@@ -903,17 +922,26 @@ async function createJob(request, env) {
   const sourceManifest = { job_id: jobId, step: "01_source_intake", sources };
   const job = { job_id: jobId, status: "queued", step: "01_source_intake", source_manifest: sourceManifest, sources, created_at: new Date().toISOString() };
   await putJob(env, job);
+  await enqueuePendingJob(env, jobId);
   return job;
 }
 
 async function claimNextJob(env) {
-  const jobs = (await listJobs(env)).filter(job => job.status === "queued").sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)));
-  const job = jobs[0];
-  if (!job) return null;
-  job.status = "claimed";
-  job.claimed_at = new Date().toISOString();
-  await putJob(env, job);
-  return job;
+  const pendingJobIds = await readPendingJobIds(env);
+  if (!pendingJobIds.length) return null;
+  while (pendingJobIds.length) {
+    const jobId = pendingJobIds.shift();
+    const key = JOB_KEY_PREFIX + jobId;
+    const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
+    if (!job || job.status !== "queued") continue;
+    job.status = "claimed";
+    job.claimed_at = new Date().toISOString();
+    await putJob(env, job);
+    await writePendingJobIds(env, pendingJobIds);
+    return job;
+  }
+  await writePendingJobIds(env, pendingJobIds);
+  return null;
 }
 
 export default { async fetch(request, env) {
