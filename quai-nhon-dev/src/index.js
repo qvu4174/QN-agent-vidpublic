@@ -507,7 +507,19 @@ async function uploadGeminiFile(stream, contentLength, file, env) {
   if (!fileResource?.name) throw new Error("Gemini returned no file resource for " + file.name + ".");
   for (let attempt = 0; attempt < 30; attempt++) {
     if (fileResource.state === "ACTIVE") return fileResource;
-    if (fileResource.state === "FAILED") throw new Error("Gemini could not process " + file.name + ".");
+    if (fileResource.state === "FAILED") {
+      const processingError = fileResource.error && typeof fileResource.error === "object" ? fileResource.error : {};
+      const processingMessage = typeof processingError.message === "string" && processingError.message ? processingError.message : "Unknown Gemini processing error";
+      const processingStatus = processingError.status ?? null;
+      const diagnostics = {
+        error: { code: processingError.code ?? null, message: processingMessage, status: processingStatus },
+        mimeType: fileResource.mimeType ?? null,
+        sizeBytes: fileResource.sizeBytes ?? null,
+        videoMetadata: fileResource.videoMetadata ?? null
+      };
+      console.error("Gemini file processing failed", diagnostics);
+      throw new Error("Gemini could not process " + file.name + ": " + processingMessage + (processingStatus ? " (status: " + processingStatus + ")" : ""));
+    }
     await new Promise(resolve => setTimeout(resolve, 2000));
     const status = await fetch("https://generativelanguage.googleapis.com/v1beta/" + fileResource.name + "?key=" + encodeURIComponent(env.GEMINI_API_KEY));
     if (!status.ok) throw new Error("Could not check Gemini processing status for " + file.name + ".");
