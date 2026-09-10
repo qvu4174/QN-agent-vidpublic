@@ -569,11 +569,30 @@ async function verifyRenderedVideo(request, env, job, renderArtifact) {
   const mimeType = request.headers.get("content-type") || "video/mp4";
   const geminiFile = await uploadGeminiFile(request.body, contentLength, { name: fileName, mimeType }, env);
   const plan = job.reel_plan;
-  const parts = [{ text: "Verify the actual final rendered video against this canonical reel_plan. Inspect only the rendered video attached here; do not infer success from source clips or metadata. Check sequence and timing fidelity, missing or broken shots, black or blank frames, crop and orientation, transitions, visible text, audible audio problems when detectable, and major mismatch with the plan. Return a JSON object with render_verification_status set to completed, the exact plan_id and sequence_id, decision pass or revise, checks as concise check results, and issues as sparse actionable issues.\n\nCANONICAL REEL PLAN:\n" + JSON.stringify(plan) }];
-  parts.push({ fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } });
-  const analysis = await generateGeminiJson(parts, env, "Gemini returned invalid render verification JSON.");
+  const verificationSchema = {
+    type: "OBJECT",
+    properties: {
+      render_verification_status: { type: "STRING", enum: ["completed"] },
+      plan_id: { type: "STRING" },
+      sequence_id: { type: "STRING" },
+      decision: { type: "STRING", enum: ["pass", "revise"] },
+      checks: { type: "ARRAY", items: { type: "OBJECT" } },
+      issues: { type: "ARRAY", items: { type: "OBJECT" } }
+    },
+    required: ["render_verification_status", "plan_id", "sequence_id", "decision", "checks", "issues"]
+  };
+  const prompt = "Verify the actual final rendered video against this canonical reel_plan. Inspect only the rendered video attached here; do not infer success from source clips or metadata. Check sequence and timing fidelity, missing or broken shots, black or blank frames, crop and orientation, transitions, visible text, audible audio problems when detectable, and major mismatch with the plan. Return exactly the requested schema: render_verification_status must be completed, plan_id and sequence_id must be copied exactly, decision must be pass or revise, checks must always be an array, and issues must always be an array (empty arrays are valid). Do not include or invent render_artifact; code will preserve it.\n\nCANONICAL REEL PLAN:\n" + JSON.stringify(plan);
+  const parts = [{ text: prompt }, { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } }];
+  const generationConfig = { responseSchema: verificationSchema };
   const verifier = createRenderVerificationAgent({ analyze: async () => ({ ...analysis, plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact }) });
-  return verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact });
+  let analysis = await generateGeminiJson(parts, env, "Gemini returned invalid render verification JSON.", generationConfig);
+  try {
+    return await verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact, analysis });
+  } catch (error) {
+    const correctiveParts = [{ text: "Your previous Step 12 response failed the required output contract. Return only a JSON object matching the provided schema. It must include render_verification_status set to completed, the exact plan_id and sequence_id, decision pass or revise, checks as an array, and issues as an array. Empty checks and issues arrays are valid. Do not include render_artifact; code will preserve it.\n\nORIGINAL STEP 12 REQUEST:\n" + prompt }, parts[1]];
+    analysis = await generateGeminiJson(correctiveParts, env, "Gemini returned invalid render verification JSON.", generationConfig);
+    return await verifier.evaluate({ plan_id: plan.plan_id, sequence_id: plan.sequence.sequence_id, render_artifact: renderArtifact, analysis });
+  }
 }
 
 async function analyze(fileIds, driveAccessToken, env) {
