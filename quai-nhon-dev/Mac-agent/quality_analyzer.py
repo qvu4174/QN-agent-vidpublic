@@ -6,7 +6,7 @@ import subprocess
 
 FRAME_WIDTH = 320
 FRAME_HEIGHT = 180
-MAX_FRAMES = 60
+MAX_FRAMES = 16
 
 
 def _score(value):
