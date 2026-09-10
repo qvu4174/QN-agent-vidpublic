@@ -514,8 +514,16 @@ async function uploadGeminiFile(stream, contentLength, file, env) {
   throw new Error("Gemini timed out while processing " + file.name + ".");
 }
 
-async function analyze(fileIds, driveAccessToken, env) {
+async function generateGeminiJson(parts, env, invalidMessage) {
   if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured on the Worker.");
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(env.GEMINI_MODEL || "gemini-3.7-flash") + ":generateContent?key=" + encodeURIComponent(env.GEMINI_API_KEY), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Gemini analysis failed.");
+  const text = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || "").join("");
+  try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error(invalidMessage); }
+}
+
+async function analyze(fileIds, driveAccessToken, env) {
   const files = [];
   for (const id of fileIds) {
     const metadataResponse = await fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(id) + "?fields=id,name,mimeType,size&supportsAllDrives=true", { headers: { Authorization: "Bearer " + driveAccessToken } });
@@ -531,11 +539,36 @@ async function analyze(fileIds, driveAccessToken, env) {
   }
   const parts = [{ text: QN_VIDEO_INSTRUCTIONS + "\n\nReturn an object with these fields where applicable: concept, target duration, ordered timeline, source filename, start/end trim, reason, transition, optional text, rejected clips with reasons, and overall reasoning. Source files: " + files.map(file => file.name).join(", ") }];
   files.forEach(file => parts.push({ fileData: { mimeType: file.geminiFile.mimeType, fileUri: file.geminiFile.uri } }));
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(env.GEMINI_MODEL || "gemini-3.7-flash") + ":generateContent?key=" + encodeURIComponent(env.GEMINI_API_KEY), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }) });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Gemini analysis failed.");
-  const text = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || "").join("");
-  try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error("Gemini returned invalid edit-plan JSON."); }
+  return generateGeminiJson(parts, env, "Gemini returned invalid edit-plan JSON.");
+}
+
+function normalizeStoryResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Gemini story result must be an object.");
+  return {
+    status: result.status || "completed",
+    story_goal: result.story_goal ?? null,
+    story_theme: result.story_theme ?? null,
+    story_arc: {
+      opening: result.story_arc?.opening ?? null,
+      development: result.story_arc?.development ?? null,
+      ending: result.story_arc?.ending ?? null
+    },
+    tone: result.tone ?? null
+  };
+}
+
+function validateStoryInput(manifests) {
+  for (const [name, manifest] of Object.entries(manifests)) {
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.shots)) throw new Error(`${name} manifest is required for Step 6.`);
+    if (name !== "shot_manifest" && manifest.status !== "completed") throw new Error(`${name} manifest is not completed for Step 6.`);
+  }
+}
+
+async function analyzeStory(manifests, env) {
+  validateStoryInput(manifests);
+  const prompt = "Use only these completed Step 2-5 pipeline manifests to create the story. Return JSON only with exactly these fields: status, story_goal, story_theme, story_arc (object with opening, development, ending), and tone. Do not invent unavailable footage details. Pipeline manifests:\n" + JSON.stringify(manifests);
+  const result = await generateGeminiJson([{ text: prompt }], env, "Gemini returned invalid story JSON.");
+  return normalizeStoryResult(result);
 }
 
 const JOB_KEY_PREFIX = "qn:job:";
@@ -614,11 +647,28 @@ export default { async fetch(request, env) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
     const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
     if (!job) return json({ error: "Job not found" }, 404);
-    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest"]) {
+    for (const field of ["status", "progress", "error", "outputDriveUrl", "shot_manifest", "quality_manifest", "visual_tag_manifest", "duplicate_manifest", "story_manifest"]) {
       if (Object.prototype.hasOwnProperty.call(body, field)) job[field] = body[field];
     }
     await putJob(env, job);
     return json({ success: true, job });
+  }
+  const storyMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/story$/) : null;
+  if (storyMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    let body; try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    try {
+      const storyManifest = await analyzeStory({
+        shot_manifest: body.shot_manifest,
+        quality_manifest: body.quality_manifest,
+        visual_tag_manifest: body.visual_tag_manifest,
+        duplicate_manifest: body.duplicate_manifest
+      }, env);
+      return json({ success: true, story_manifest: storyManifest });
+    } catch (error) {
+      console.error("Gemini story analysis failed", error);
+      return json({ error: error instanceof Error ? error.message : "Gemini story analysis failed." }, 502);
+    }
   }
   if (request.method === "GET" && url.pathname === "/api/jobs/next") {
     if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);

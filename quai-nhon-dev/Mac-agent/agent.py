@@ -127,6 +127,7 @@ def update_job(
     quality_manifest=None,
     visual_tag_manifest=None,
     duplicate_manifest=None,
+    story_manifest=None,
 ):
     body = {"status": status}
 
@@ -147,6 +148,8 @@ def update_job(
         body["visual_tag_manifest"] = visual_tag_manifest
     if duplicate_manifest is not None:
         body["duplicate_manifest"] = duplicate_manifest
+    if story_manifest is not None:
+        body["story_manifest"] = story_manifest
 
     url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/status"
 
@@ -156,6 +159,15 @@ def update_job(
         cfg["mac_agent_token"],
         body,
     )
+
+
+def request_story(cfg, job_id, manifests):
+    url = cfg["server_url"].rstrip("/") + f"/api/jobs/{job_id}/story"
+    response = http_json("POST", url, cfg["mac_agent_token"], manifests)
+    story_manifest = response.get("story_manifest")
+    if not isinstance(story_manifest, dict):
+        raise RuntimeError("Story endpoint returned no story manifest")
+    return story_manifest
 
 
 def acquire_lock(job_id):
@@ -427,9 +439,30 @@ def process_job(cfg, job):
         update_job(
             cfg,
             jid,
+            "story_analyzing",
+            95,
+            duplicate_manifest=duplicate_manifest,
+        )
+
+        log("STEP 6: running Gemini story analysis")
+        story_manifest = request_story(
+            cfg,
+            jid,
+            {
+                "shot_manifest": shot_manifest,
+                "quality_manifest": quality_manifest,
+                "visual_tag_manifest": visual_tag_manifest,
+                "duplicate_manifest": duplicate_manifest,
+            },
+        )
+        log("STEP 6 COMPLETE: story manifest generated")
+
+        update_job(
+            cfg,
+            jid,
             "ready",
             100,
-            duplicate_manifest=duplicate_manifest,
+            story_manifest=story_manifest,
         )
 
         return
