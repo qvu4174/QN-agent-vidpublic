@@ -518,11 +518,24 @@ async function uploadGeminiFile(stream, contentLength, file, env) {
 
 async function generateGeminiJson(parts, env, invalidMessage) {
   if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured on the Worker.");
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(env.GEMINI_MODEL || "gemini-3.7-flash") + ":generateContent?key=" + encodeURIComponent(env.GEMINI_API_KEY), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }) });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Gemini analysis failed.");
-  const text = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || "").join("");
-  try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error(invalidMessage); }
+  const request = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }) };
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(env.GEMINI_MODEL || "gemini-3.7-flash") + ":generateContent?key=" + encodeURIComponent(env.GEMINI_API_KEY);
+  const retryDelays = [3000, 8000];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const response = await fetch(url, request);
+    let data;
+    try { data = await response.json(); } catch { data = {}; }
+    if (response.ok) {
+      const text = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || "").join("");
+      try { return parseGeminiJson(text); } catch (error) { console.error("Gemini returned invalid JSON", { responseText: text.slice(0, 20000), error: String(error) }); throw new Error(invalidMessage); }
+    }
+    const reason = data.error?.message || "Gemini analysis failed.";
+    const transient = [429, 500, 502, 503, 504].includes(response.status) || /high demand|service unavailable|temporarily unavailable|overloaded|resource exhausted|try again/i.test(reason);
+    if (!transient || attempt === 3) throw new Error(reason);
+    const retryReason = [429, 500, 502, 503, 504].includes(response.status) ? `HTTP ${response.status}` : "transient Gemini service condition";
+    console.warn("Transient Gemini failure; retrying", { attempt, nextAttempt: attempt + 1, reason: retryReason });
+    await new Promise(resolve => setTimeout(resolve, retryDelays[attempt - 1]));
+  }
 }
 
 async function verifyRenderedVideo(request, env, job, renderArtifact) {
