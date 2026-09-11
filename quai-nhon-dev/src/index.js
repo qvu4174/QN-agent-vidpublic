@@ -233,6 +233,31 @@ function formatSize(bytes){if(!bytes)return"—";const units=["B","KB","MB","GB"
 function normalizeSource(file,index){return{source_id:"src_"+String(index+1).padStart(3,"0"),drive_file_id:file.id||null,drive_path:file.drivePath||null,filename:file.name||null,mime_type:file.mimeType||null,size_bytes:file.sizeBytes||null,duration_sec:file.durationSec||null,resolution:file.resolution||null,fps:file.fps||null,local_path:TEST_LOCAL_SYNC_BYPASS&&file.name?"/QN_RENDER_SOURCE/"+file.name:null,local_ready:TEST_LOCAL_SYNC_BYPASS&&!!file.name}}function validateSource(source){return !!(source.drive_file_id&&source.filename&&source.mime_type)}function createSourceIntakeJob(){if(!selectedFiles.size)return null;if(!sourceIntakeJob)sourceIntakeJob={job_id:crypto.randomUUID(),step:"01_source_intake",status:"active",sources:[]};sourceIntakeJob.sources=[...selectedFiles.values()].map(normalizeSource);sourceIntakeJob.status=sourceIntakeJob.sources.every(validateSource)&&sourceIntakeJob.sources.every(source=>source.local_ready)?"completed":"active";return sourceIntakeJob}function manifest(){const job=createSourceIntakeJob();return{job_id:job?job.job_id:null,step:"01_source_intake",clips:job?job.sources:[]}}function renderJson(){const value=JSON.stringify(manifest(),null,2);$("json-preview").textContent=value;$("json-output").textContent=value}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating test job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");$("message").textContent="Test job queued: "+data.job.job_id;$("message").className="status"}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<2}}function authHeaders(){return{"content-type":"application/json","x-control-key":$("control-key").value.trim()}}$("control-key").oninput=async()=>{const status=$("auth-status");if(!$("control-key").value.trim()){status.textContent="";return}status.textContent="Checking control key...";try{const response=await fetch("/api/auth/check",{method:"POST",headers:authHeaders()}),data=await response.json();status.textContent=data.valid?"Control key valid":"Invalid control key";status.className="status"+(data.valid?"":" error")}catch(e){status.textContent=e.message;status.className="status error"}};
 $("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;let activeJobId=null;async function pollActiveJob(jobId){for(let attempt=0;attempt<120;attempt++){if(activeJobId!==jobId)return;const response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{headers:{"x-control-key":$("control-key").value.trim()}});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not read job status.");if(data.job?.job_id!==activeJobId)return;document.dispatchEvent(new CustomEvent("qn:job-response",{detail:data.job}));$("message").textContent="Job status: "+(data.job.status||"unknown");
 if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");if(["ready_for_review","failed"].includes(data.job.status))return;await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){if(activeJobId)return;submitted=true;settled=false;requestFailed=false;latestJob=null;$('operator-setup').hidden=true;$('operator-processing').hidden=false;showView("production");renderOperatorState();const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("message").textContent="Job queued: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{if(!activeJobId||requestFailed||latestJob?.status==="failed")$("start").disabled=selectedFiles.size<2}}document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
+let pipelineStartInProgress=false;
+startPipeline=async function(){
+  if(activeJobId||pipelineStartInProgress)return;
+  pipelineStartInProgress=true;
+  document.dispatchEvent(new CustomEvent("qn:job-start"));
+  const sourceManifest=manifest();
+  $("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";
+  try{
+    const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.error||"Could not create job.");
+    if(!data.job?.job_id)throw new Error("Job response did not include a job ID.");
+    activeJobId=data.job.job_id;
+    document.dispatchEvent(new CustomEvent("qn:job-created",{detail:data.job}));
+    $("message").textContent="Job queued: "+activeJobId;
+    await pollActiveJob(activeJobId);
+  }catch(error){
+    document.dispatchEvent(new CustomEvent("qn:job-error",{detail:{message:error.message}}));
+    $("message").textContent=error.message;$("message").className="status error";
+  }finally{
+    pipelineStartInProgress=false;
+    if(!activeJobId)$("start").disabled=selectedFiles.size<2;
+  }
+};
+$("start").onclick=startPipeline;
 </script>
 <style>
 /* Visual layer. Pipeline bindings and operation handlers remain unchanged. */
@@ -377,6 +402,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
   keyReady.className="operator-status";keyReady.hidden=true;keyReady.textContent="Control key ready";
   authContainer.after(keyReady);
   let submitted=false,latestJob=null,settled=false,requestFailed=false;
+  let operatorActiveJobId=null;
   const initialSteps=Array.from(document.querySelectorAll("#steps .step"),el=>el.className);
   const initialMetrics=Array.from(document.querySelectorAll(".metric strong"),el=>el.textContent);
   const initialHeading=document.querySelector(".agent-head h2").textContent;
@@ -422,11 +448,13 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
   new MutationObserver(refreshProgressPresentation).observe($("operator-progress"),{attributes:true,attributeFilter:["hidden","value","max"]});
   function renderProductionPipelineShell(){
     const stepCount=pipelineSteps.length;
-    document.querySelector(".brand small").textContent=stepCount+"-Step Production Pipeline";
     const metrics=document.querySelectorAll(".metric strong");
+    const agentHeading=document.querySelector(".agent-head h2");
+    const stepNumber=document.querySelector(".step-no");
+    if(metrics.length<4||!agentHeading||!stepNumber||!pipelineSteps.length)return;
     metrics[0].textContent=String(stepCount);metrics[3].textContent=String(stepCount-1);
-    document.querySelector(".agent-head h2").textContent="1/"+stepCount+" "+pipelineSteps[0][0];
-    document.querySelector(".step-no").textContent="2/"+stepCount;
+    agentHeading.textContent="1/"+stepCount+" "+pipelineSteps[0][0];
+    stepNumber.textContent="2/"+stepCount;
   }
   renderProductionPipelineShell();
   function renderPipelineState(job){
@@ -459,9 +487,20 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
   // The pipeline start handler owns the operator transition and polling directly.
   // A read-only observer of the response already fetched by the pipeline.
   // Keep this hook when integrating newer polling code; do not replace its handling.
+  document.addEventListener("qn:job-start",()=>{
+    submitted=true;settled=false;requestFailed=false;latestJob=null;operatorActiveJobId=null;
+    $("operator-setup").hidden=true;$("operator-processing").hidden=false;
+    showView("production");renderOperatorState();
+  });
+  document.addEventListener("qn:job-created",event=>{
+    operatorActiveJobId=event.detail?.job_id||null;
+  });
+  document.addEventListener("qn:job-error",()=>{
+    requestFailed=true;settled=true;latestJob=null;renderOperatorState();
+  });
   document.addEventListener("qn:job-response",event=>{
     const job=event.detail;
-    if(!submitted||!job||job.job_id!==activeJobId)return;
+    if(!submitted||!job||job.job_id!==operatorActiveJobId)return;
     latestJob=job;$("operator-job-json").textContent=JSON.stringify(job,null,2);
     renderPipelineState(job);
     if(["ready_for_review","failed"].includes(job.status)){settled=true;requestFailed=job.status==="failed";}
@@ -502,7 +541,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
   $("operator-new-reel").onclick=()=>{
     if($("operator-new-reel").hidden)return;
     activeJobId=null;sourceIntakeJob=null;selectedFiles.clear();
-    submitted=false;settled=false;requestFailed=false;latestJob=null;
+    submitted=false;settled=false;requestFailed=false;latestJob=null;operatorActiveJobId=null;
     sourcePanel.appendChild(authContainer);authContainer.after(keyReady);
     renderFiles();renderJson();
     $("shot-output").textContent=JSON.stringify(createShotDetectionOutput(manifest()),null,2);
