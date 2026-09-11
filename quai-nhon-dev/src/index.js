@@ -1,4 +1,6 @@
 import { createRenderVerificationAgent } from "./render-verification-agent.js";
+import { normalizeFeedbackResult } from "./human-feedback-agent.js";
+import { selectMusicTrack } from "./qn-music-library.js";
 
 const VIDEO_MIME_TYPES = new Set([
   "video/mp4", "video/quicktime", "video/x-msvideo", "video/webm",
@@ -213,7 +215,7 @@ const PIPELINE_HTML = `<!doctype html>
   </style>
 </head>
 <body><div class="app">
-  <aside class="sidebar"><div class="brand"><div class="mark">QN</div><div><strong>QN Reel Pipeline</strong><small>17-Step AI Video Editor</small></div></div><nav class="nav"><button class="active"><span>01</span>Pipeline</button><button><span>02</span>Jobs</button><button><span>03</span>History</button><button><span>04</span>Reel Memory</button><button><span>05</span>MacBook Agent</button><button><span>06</span>Style Profile</button><button><span>07</span>Logs</button><button><span>08</span>Settings</button></nav></aside>
+  <aside class="sidebar"><div class="brand"><div class="mark">QN</div><div><strong>QN Reel Pipeline</strong><small>14-Step Production Pipeline</small></div></div><nav class="nav"><button class="active"><span>01</span>Pipeline</button><button><span>02</span>Jobs</button><button><span>03</span>History</button><button><span>04</span>Reel Memory</button><button><span>05</span>MacBook Agent</button><button><span>06</span>Style Profile</button><button><span>07</span>Logs</button><button><span>08</span>Settings</button></nav></aside>
   <main class="main"><header class="topbar"><div><div class="kicker">PIPELINE / NEW JOB</div><h1>New Reel Pipeline</h1><p class="sub">Từ Google Drive → Reel hoàn chỉnh</p></div><div class="top-actions"><button class="btn">Save Draft</button><button class="btn primary" id="start" disabled>Start Pipeline</button></div></header>
     <section class="progress-wrap"><div class="group-row"><div class="group">UNDERSTAND FOOTAGE</div><div class="group">BUILD THE REEL</div><div class="group">LEARN + PUBLISH</div></div><div class="steps" id="steps"></div></section>
     <div class="workspace"><section class="panel source-panel"><div class="panel-head"><div><div class="panel-title">SOURCE CLIPS</div><div class="drive-state" id="drive-status">Not connected</div></div><span class="muted" id="clip-count">0 / 10</span></div><div class="drive-actions"><button class="btn" id="drive-connect">Connect Google Drive</button><button class="btn" id="select-files" disabled>Select Drive Files</button></div><div class="status" id="drive-message">Connect Google Drive to begin.</div><div class="files" id="selected-files"><div class="muted">No source clips selected.</div></div><div class="auth"><label class="label" for="control-key">CONTROL KEY</label><input id="control-key" type="password" autocomplete="current-password" placeholder="Enter control key" /><div class="status" id="auth-status"></div></div></section>
@@ -223,14 +225,14 @@ const PIPELINE_HTML = `<!doctype html>
 </div>
 <script>
 const CONFIG=__QN_GOOGLE_CONFIG__,SOURCE_FOLDER_ID=CONFIG.sourceFolderId||"",/* TEMPORARY TEST-ONLY LOCAL SYNC BYPASS */TEST_LOCAL_SYNC_BYPASS=true,$=id=>document.getElementById(id),selectedFiles=new Map();let accessToken=null,tokenClient=null,pickerReady=false;
-const pipelineSteps=[['Source Intake Agent','active'],['Shot Detection Agent','pending'],['Quality Agent','pending'],['Visual Tag Agent','pending'],['Duplicate Agent','pending'],['Story Agent','pending'],['Shot Ranking Agent','pending'],['Sequence Agent','pending'],['Timing Agent','pending'],['Text / Audio Agent','pending'],['QN Style Judge','pending'],['Render Verification Agent','pending'],['Human Feedback Agent','pending'],['Publish Agent','pending'],['Performance Agent','pending'],['Pattern Learning Agent','pending'],['Style Memory Agent','pending']];const manifestKeys=['source_manifest','shot_manifest','quality_manifest','visual_tag_manifest','duplicate_manifest','story_manifest','ranking_manifest','sequence_manifest','timing_manifest','text_audio_manifest','style_judge_manifest','render_verification_manifest'];let sourceIntakeJob=null;function createShotDetectionOutput(sourceManifest){return{status:"pending",input_step:sourceManifest.step,input_job_id:sourceManifest.job_id,shots:[]}}
+const pipelineSteps=[['Source Intake Agent','active'],['Shot Detection Agent','pending'],['Quality Agent','pending'],['Visual Tag Agent','pending'],['Duplicate Agent','pending'],['Story Agent','pending'],['Shot Ranking Agent','pending'],['Sequence Agent','pending'],['Timing Agent','pending'],['Text / Audio Agent','pending'],['QN Style Judge','pending'],['Render Verification Agent','pending'],['Human Feedback Agent','pending'],['Publish Agent','pending']];const manifestKeys=['source_manifest','shot_manifest','quality_manifest','visual_tag_manifest','duplicate_manifest','story_manifest','ranking_manifest','sequence_manifest','timing_manifest','text_audio_manifest','style_judge_manifest','render_verification_manifest'];let sourceIntakeJob=null;function createShotDetectionOutput(sourceManifest){return{status:"pending",input_step:sourceManifest.step,input_job_id:sourceManifest.job_id,shots:[]}}
 function setDriveMessage(text,error=false){$("drive-message").textContent=text;$("drive-message").className="status"+(error?" error":"")}function hasOAuth(){return !!(window.google&&google.accounts&&google.accounts.oauth2)}function initializeGoogle(){if(!CONFIG.clientId||!CONFIG.apiKey||!CONFIG.appId||!SOURCE_FOLDER_ID)throw Error("Google Drive browser configuration is incomplete.");if(!hasOAuth())throw Error("Google Identity Services is unavailable.");if(!tokenClient)tokenClient=google.accounts.oauth2.initTokenClient({client_id:CONFIG.clientId,scope:"https://www.googleapis.com/auth/drive.file",callback:handleToken,error_callback:e=>setDriveMessage(e.error_description||e.error||"Google OAuth failed.",true)});return true}function initializeGoogleOnLoad(){try{initializeGoogle();setDriveMessage("Google Drive is ready to connect.")}catch(e){setDriveMessage(e.message,true)}}function initializePickerOnLoad(){try{if(!window.gapi)throw Error("Google Picker is unavailable.");gapi.load("picker",()=>{pickerReady=true})}catch(e){setDriveMessage(e.message,true)}}function handleGoogleLoadError(message){setDriveMessage(message,true)}
 function connectGoogleDrive(){try{if(accessToken){accessToken=null;$("drive-connect").textContent="Connect Google Drive";$("select-files").disabled=true;$("drive-status").textContent="Not connected";setDriveMessage("Connect Google Drive to begin.");return}if(!tokenClient)throw Error("Google OAuth is not ready yet. Try again in a moment.");tokenClient.requestAccessToken({prompt:"consent"})}catch(e){setDriveMessage(e.message,true)}}function handleToken(response){if(response.error)return setDriveMessage(response.error_description||response.error,true);accessToken=response.access_token;$("drive-connect").textContent="Disconnect Google Drive";$("select-files").disabled=false;$("drive-status").textContent="Connected to Google Drive";setDriveMessage("Choose 2–10 video clips.")}
 function openPicker(){try{if(!accessToken)throw Error("Connect Google Drive first.");if(!pickerReady||!window.google?.picker)return setDriveMessage("Google Picker is still loading. Try again in a moment.",true);const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(false).setParent(SOURCE_FOLDER_ID).setMimeTypes("video/mp4,video/quicktime,video/webm,video/x-matroska");new google.picker.PickerBuilder().setAppId(CONFIG.appId).setDeveloperKey(CONFIG.apiKey).setOAuthToken(accessToken).addView(view).enableFeature(google.picker.Feature.MULTISELECT_ENABLED).setCallback(pickerCallback).build().setVisible(true)}catch(e){setDriveMessage(e.message,true)}}function pickerCallback(data){if(data.action===google.picker.Action.CANCEL)return setDriveMessage("File selection cancelled.");if(data.action===google.picker.Action.ERROR)return setDriveMessage("Google Picker returned an error. Reconnect and retry.",true);if(data.action!==google.picker.Action.PICKED)return;(data.docs||[]).forEach(file=>{if(selectedFiles.size>=10&&!selectedFiles.has(file.id))return;const name=file.name||"Untitled video",mimeType=file.mimeType||"video/mp4";selectedFiles.set(file.id,{id:file.id,name,mimeType,sizeBytes:file.sizeBytes||null})});renderFiles();createSourceIntakeJob();renderJson();$("shot-output").textContent=JSON.stringify(createShotDetectionOutput(manifest()),null,2);setDriveMessage(selectedFiles.size+" clip(s) selected.")}
 function formatSize(bytes){if(!bytes)return"—";const units=["B","KB","MB","GB"];let n=Number(bytes),i=0;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(i?1:0)+" "+units[i]}function renderFiles(){const files=[...selectedFiles.values()];$("clip-count").textContent=files.length+" / 10";$("summary-count").textContent=files.length;$("summary-size").textContent=formatSize(files.reduce((sum,file)=>sum+(Number(file.sizeBytes)||0),0))||"—";$("start").disabled=files.length<2;$("selected-files").innerHTML=files.length?files.map(file=>'<div class="file"><div class="thumb">▶</div><div class="file-body"><div class="file-name">'+escapeHtml(file.name)+'</div><div class="file-meta">'+formatSize(file.sizeBytes)+'</div></div><button class="remove" data-file-id="'+escapeHtml(file.id)+'" aria-label="Remove '+escapeHtml(file.name)+'">×</button></div>').join(""):"<div class=\\\"muted\\\">No source clips selected.</div>";$("selected-files").querySelectorAll("[data-file-id]").forEach(button=>button.onclick=()=>{selectedFiles.delete(button.dataset.fileId);renderFiles();renderJson()})}function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]))}
 function normalizeSource(file,index){return{source_id:"src_"+String(index+1).padStart(3,"0"),drive_file_id:file.id||null,drive_path:file.drivePath||null,filename:file.name||null,mime_type:file.mimeType||null,size_bytes:file.sizeBytes||null,duration_sec:file.durationSec||null,resolution:file.resolution||null,fps:file.fps||null,local_path:TEST_LOCAL_SYNC_BYPASS&&file.name?"/QN_RENDER_SOURCE/"+file.name:null,local_ready:TEST_LOCAL_SYNC_BYPASS&&!!file.name}}function validateSource(source){return !!(source.drive_file_id&&source.filename&&source.mime_type)}function createSourceIntakeJob(){if(!selectedFiles.size)return null;if(!sourceIntakeJob)sourceIntakeJob={job_id:crypto.randomUUID(),step:"01_source_intake",status:"active",sources:[]};sourceIntakeJob.sources=[...selectedFiles.values()].map(normalizeSource);sourceIntakeJob.status=sourceIntakeJob.sources.every(validateSource)&&sourceIntakeJob.sources.every(source=>source.local_ready)?"completed":"active";return sourceIntakeJob}function manifest(){const job=createSourceIntakeJob();return{job_id:job?job.job_id:null,step:"01_source_intake",clips:job?job.sources:[]}}function renderJson(){const value=JSON.stringify(manifest(),null,2);$("json-preview").textContent=value;$("json-output").textContent=value}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating test job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");$("message").textContent="Test job queued: "+data.job.job_id;$("message").className="status"}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<2}}function authHeaders(){return{"content-type":"application/json","x-control-key":$("control-key").value.trim()}}$("control-key").oninput=async()=>{const status=$("auth-status");if(!$("control-key").value.trim()){status.textContent="";return}status.textContent="Checking control key...";try{const response=await fetch("/api/auth/check",{method:"POST",headers:authHeaders()}),data=await response.json();status.textContent=data.valid?"Control key valid":"Invalid control key";status.className="status"+(data.valid?"":" error")}catch(e){status.textContent=e.message;status.className="status error"}};
 $("drive-connect").onclick=connectGoogleDrive;$("select-files").onclick=openPicker;let activeJobId=null;async function pollActiveJob(jobId){for(let attempt=0;attempt<120;attempt++){if(activeJobId!==jobId)return;const response=await fetch("/api/jobs/"+encodeURIComponent(jobId),{headers:{"x-control-key":$("control-key").value.trim()}});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not read job status.");if(data.job?.job_id!==activeJobId)return;document.dispatchEvent(new CustomEvent("qn:job-response",{detail:data.job}));$("message").textContent="Job status: "+(data.job.status||"unknown");
-if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("steps").querySelectorAll(".step")[0].className="step completed";$("message").textContent="Step 1 completed. Job: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{$("start").disabled=selectedFiles.size<2}}$("start").onclick=startPipeline;document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
+if(data.job.status==="failed")throw new Error(data.job.error||"Job failed.");if(["ready_for_review","failed"].includes(data.job.status))return;await new Promise(resolve=>setTimeout(resolve,1000))}}async function startPipeline(){if(activeJobId)return;submitted=true;settled=false;requestFailed=false;latestJob=null;$('operator-setup').hidden=true;$('operator-processing').hidden=false;showView("production");renderOperatorState();const sourceManifest=manifest();$("start").disabled=true;$("message").textContent="Creating job...";$("message").className="status";try{const response=await fetch("/api/jobs",{method:"POST",headers:authHeaders(),body:JSON.stringify({source_manifest:sourceManifest})}),data=await response.json();if(!response.ok)throw new Error(data.error||"Could not create job.");activeJobId=data.job.job_id;$("message").textContent="Job queued: "+activeJobId;await pollActiveJob(activeJobId)}catch(e){$("message").textContent=e.message;$("message").className="status error"}finally{if(!activeJobId||requestFailed||latestJob?.status==="failed")$("start").disabled=selectedFiles.size<2}}document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(item=>item.classList.toggle("active",item===tab));document.querySelectorAll("[id^=tab-]").forEach(panel=>panel.classList.toggle("hidden",panel.id!=="tab-"+tab.dataset.tab))});$("steps").innerHTML=pipelineSteps.map((step,index)=>'<div class="step '+step[1]+'"><div class="step-line"></div><div class="step-name"><span class="step-no">'+(index+1)+"</span>"+step[0]+"</div></div>").join("");renderFiles();renderJson();
 </script>
 <style>
 /* Visual layer. Pipeline bindings and operation handlers remain unchanged. */
@@ -354,7 +356,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
   }
   const production=makeView("production",'<div id="operator-setup"><div class="operator-intro"><p class="operator-edition">A new production</p><h1>Your footage.<br><em>A new story.</em></h1><p>Create a reel from the moments you captured.</p><div id="operator-connections"></div></div><div id="operator-sources"></div><div id="operator-start"></div></div><div id="operator-processing" class="operator-state" hidden aria-live="polite"><p class="operator-state-caption">Your production</p><p id="operator-job" class="operator-status"></p><h1 id="operator-activity">Preparing footage</h1><div class="operator-progress-stage"><output id="operator-progress-number" aria-hidden="true" hidden></output><progress id="operator-progress" aria-label="Reported job progress"></progress></div><p id="operator-explanation"></p><div class="operator-state-actions"><button class="operator-link" data-open="diagnostics">View diagnostics</button><button class="btn" id="operator-new-reel" hidden>Start another reel</button></div></div>');
   const diagnostics=makeView("diagnostics",'<h1>Diagnostics</h1><p>Pipeline details and source identities for the current page. Runtime heartbeat data is not available.</p><h2>Job response</h2><pre class="operator-log" id="operator-job-json">No job response yet.</pre><div id="operator-pipeline"></div>');
-  const settings=makeView("settings",'<h1>Connections</h1><p id="operator-connection">Google Drive is not connected.</p><button class="btn" id="operator-disconnect" hidden>Disconnect Google Drive</button><h2>Control key</h2><p>The key stays in the current page. Reloading requires entering it again.</p><button class="btn" id="operator-edit-key">Edit control key</button><h2>Availability</h2><p>Final video review, approval, and publishing are not connected in this version.</p>');
+  const settings=makeView("settings",'<h1>Connections</h1><p id="operator-connection">Google Drive is not connected.</p><button class="btn" id="operator-disconnect" hidden>Disconnect Google Drive</button><h2>Control key</h2><p>The key stays in the current page. Reloading requires entering it again.</p><button class="btn" id="operator-edit-key">Edit control key</button><h2>Availability</h2><p>Publishing is not connected in this version.</p>');
   $("operator-sources").appendChild(sourcePanel);
   $("operator-start").appendChild(startButton);
   startButton.textContent="Create reel";
@@ -418,6 +420,15 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
     number.textContent=number.hidden?"":Math.round(progress.value)+"%";
   }
   new MutationObserver(refreshProgressPresentation).observe($("operator-progress"),{attributes:true,attributeFilter:["hidden","value","max"]});
+  function renderProductionPipelineShell(){
+    const stepCount=pipelineSteps.length;
+    document.querySelector(".brand small").textContent=stepCount+"-Step Production Pipeline";
+    const metrics=document.querySelectorAll(".metric strong");
+    metrics[0].textContent=String(stepCount);metrics[3].textContent=String(stepCount-1);
+    document.querySelector(".agent-head h2").textContent="1/"+stepCount+" "+pipelineSteps[0][0];
+    document.querySelector(".step-no").textContent="2/"+stepCount;
+  }
+  renderProductionPipelineShell();
   function renderPipelineState(job){
     const manifests=manifestKeys.map(key=>job?.[key]);
     const failed=manifest=>["failed","error"].includes(String(manifest?.status||"").toLowerCase());
@@ -437,23 +448,15 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
     metrics[1].textContent=String(completedCount);metrics[2].textContent=String(inProgressCount);metrics[3].textContent=String(pendingCount);metrics[4].textContent=String(failedCount);metrics[5].textContent=progress+"%";
     const displayIndex=inProgressIndex===null?pipelineSteps.findIndex((step,index)=>!completed[index]&&!failedSteps[index]):inProgressIndex;
     const currentStep=displayIndex<0?pipelineSteps.length-1:displayIndex;
-    document.querySelector(".agent-head h2").textContent=(currentStep+1)+"/17 "+pipelineSteps[currentStep][0];
+    document.querySelector(".agent-head h2").textContent=(currentStep+1)+"/"+pipelineSteps.length+" "+pipelineSteps[currentStep][0];
     document.querySelector(".agent-description").textContent=failedSteps[currentStep]?"This step reported a failure.":completedCount===pipelineSteps.length?"All implemented pipeline steps completed.":"Waiting for this pipeline step to complete.";
     const previewIndex=completedCount?currentStep:Math.min(currentStep+1,pipelineSteps.length-1);
-    document.querySelector(".step-no").textContent=(previewIndex+1)+"/17";
+    document.querySelector(".step-no").textContent=(previewIndex+1)+"/"+pipelineSteps.length;
     document.querySelector(".preview h3").textContent=pipelineSteps[previewIndex][0];
     $("shot-output").textContent=JSON.stringify(job?.shot_manifest||createShotDetectionOutput(manifest()),null,2);
     $("quality-output").textContent=JSON.stringify(job?.quality_manifest||{status:"pending",input_step:"02_shot_detection",shots:[]},null,2);
   }
-  // Wrap the existing handler; it remains the sole owner of requests and polling.
-  const existingStart=startButton.onclick;
-  startButton.onclick=async function(event){
-    submitted=true;settled=false;requestFailed=false;latestJob=null;
-    $("operator-setup").hidden=true;$("operator-processing").hidden=false;
-    renderOperatorState();showView("production");
-    try{await existingStart.call(this,event)}
-    finally{settled=true;requestFailed=$("message").classList.contains("error");renderOperatorState()}
-  };
+  // The pipeline start handler owns the operator transition and polling directly.
   // A read-only observer of the response already fetched by the pipeline.
   // Keep this hook when integrating newer polling code; do not replace its handling.
   document.addEventListener("qn:job-response",event=>{
@@ -461,12 +464,14 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
     if(!submitted||!job||job.job_id!==activeJobId)return;
     latestJob=job;$("operator-job-json").textContent=JSON.stringify(job,null,2);
     renderPipelineState(job);
+    if(["ready_for_review","failed"].includes(job.status)){settled=true;requestFailed=job.status==="failed";}
     renderOperatorState();
   });
   function operatorPhase(job){
     const status=String(job?.status||"").toLowerCase();
     if(requestFailed||status==="failed"||status==="error")return ["Something needs attention.","Open Diagnostics for details. Automatic retry is not available."];
     if(status==="published")return ["Published","The job reports that publishing is complete."];
+    if(status==="ready_for_review")return ["Ready for human review","Choose approve, revise, or reject through the review action."];
     if(status==="approved")return ["Approved","Inspect the job in Diagnostics. Publishing controls are not connected here."];
     if(status==="completed"||status==="complete")return ["Processing complete","Inspect the result in Diagnostics. Review controls are not connected here."];
     const step=Number.parseInt(String(job?.step||""),10);
@@ -487,10 +492,10 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--studio-lime);ou
     $("operator-job").textContent=activeJobId?"Reel "+activeJobId:"";
     $("operator-activity").textContent=title;$("operator-explanation").textContent=description;
     const progress=$("operator-progress"),value=latestJob?.progress;
-    progress.hidden=settled||requestFailed||["failed","error","ready","completed","complete","approved","published"].includes(latestJob?.status);
+    progress.hidden=settled||requestFailed||["failed","error","ready","ready_for_review","completed","complete","approved","published"].includes(latestJob?.status);
     if(typeof value==="number"&&Number.isFinite(value)){progress.max=100;progress.value=Math.max(0,Math.min(100,value))}else progress.removeAttribute("value");
     // Do not abandon active work merely because the current poll loop timed out.
-    const terminal=["failed","error","completed","complete","published"].includes(latestJob?.status);
+    const terminal=["failed","error","ready_for_review","completed","complete","published"].includes(latestJob?.status);
     const paused=latestJob?.status==="ready";
     $("operator-new-reel").hidden=!settled||!(terminal||paused||(requestFailed&&!activeJobId));
   }
@@ -905,7 +910,8 @@ function normalizeTextAudioManifest(result, timingManifest) {
     text_audio_status: "completed",
     sequence_id: timingManifest.sequence_id,
     text_cues: result.text_cues.map((cue, index) => normalizeCue(cue, index, "text")),
-    audio_cues: result.audio_cues.map((cue, index) => normalizeCue(cue, index, "audio"))
+    audio_cues: result.audio_cues.map((cue, index) => normalizeCue(cue, index, "audio")),
+    music_selection: result.music_selection ?? null
   };
 }
 
@@ -917,7 +923,12 @@ async function analyzeTextAudio(manifests, env) {
   if (!visualTagManifest || visualTagManifest.status !== "completed" || !Array.isArray(visualTagManifest.shots)) throw new Error("visual_tag_manifest is not completed for Step 10.");
   const textAudioPrompt = "Create sparse text and audio cues for this completed Step 9 timing. Support the footage; do not add text to every shot. Return a JSON object with text_audio_status set to completed, the exact sequence_id, text_cues, and audio_cues. Cue ranges must stay within the target duration and cue shot_id values must reference the timed shots; empty arrays are valid. Text cue fields: shot_id, text, language, timeline_start_sec, timeline_end_sec, placement_hint. Audio cue fields: audio_type, shot_id, asset_ref, script, timeline_start_sec, timeline_end_sec, gain_db.\n" + JSON.stringify(manifests);
   const result = await generateGeminiJson([{ text: textAudioPrompt }], env, "Gemini returned invalid text/audio JSON.");
-  return normalizeTextAudioManifest(result, timingManifest);
+  const textAudioManifest = normalizeTextAudioManifest(result, timingManifest);
+  textAudioManifest.music_selection = selectMusicTrack({
+    storyManifest,
+    visualTagManifest
+  });
+  return textAudioManifest;
 }
 
 function normalizeStyleJudgeManifest(result, manifests) {
@@ -1095,6 +1106,42 @@ export default { async fetch(request, env) {
     }
     await putJob(env, job);
     return json({ success: true, job });
+  }
+  const reviewMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/review$/) : null;
+  if (reviewMatch) {
+    if (!authorized(request, env)) return json({ error: "Unauthorized" }, 401);
+    const jobId = decodeURIComponent(reviewMatch[1]);
+    const key = JOB_KEY_PREFIX + jobId;
+    const job = env.JOBS?.get ? await env.JOBS.get(key, "json") : memoryJobs.get(key);
+    if (!job) return json({ error: "Job not found" }, 404);
+    if (job.status !== "ready_for_review") return json({ error: "Job is not ready for human review." }, 409);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body" }, 400); }
+    const planId = job.reel_plan?.plan_id;
+    const sequenceId = job.reel_plan?.sequence?.sequence_id;
+    if (!planId || !sequenceId || !job.render_artifact || !job.render_verification_manifest) {
+      return json({ error: "Job is missing review lineage or render artifacts." }, 409);
+    }
+    try {
+      const feedback = normalizeFeedbackResult({
+        ...body,
+        feedback_status: "completed",
+        plan_id: planId,
+        sequence_id: sequenceId,
+      }, {
+        plan_id: planId,
+        sequence_id: sequenceId,
+        render_artifact: job.render_artifact,
+        render_verification: job.render_verification_manifest,
+      });
+      const statusByDecision = { approve: "approved", revise: "revision_requested", reject: "rejected" };
+      job.status = statusByDecision[feedback.decision];
+      job.human_feedback = { ...feedback, reviewed_at: new Date().toISOString() };
+      await putJob(env, job);
+      return json({ success: true, job });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Invalid human review." }, 400);
+    }
   }
   const storyMatch = request.method === "POST" ? url.pathname.match(/^\/api\/jobs\/([^/]+)\/story$/) : null;
   if (storyMatch) {
