@@ -218,20 +218,33 @@ def resolve_music_asset(selection):
     source_path = selection.get("source_path")
     if not isinstance(source_path, str) or not source_path.strip():
         fail("Selected music is missing source_path.")
-    project_root = Path(__file__).resolve().parent.parent
+    runtime_root = Path(__file__).resolve().parent
+    project_root = runtime_root.parent if runtime_root.name == "Mac-agent" else runtime_root
     candidate = Path(source_path).expanduser()
-    if not candidate.is_absolute():
+    roots = (runtime_root, project_root)
+    if candidate.is_absolute():
+        candidates = (candidate,)
+    else:
         if candidate.parts[:1] == (project_root.name,):
             candidate = Path(*candidate.parts[1:])
-        candidate = project_root / candidate
-    candidate = candidate.resolve()
-    try:
-        candidate.relative_to(project_root)
-    except ValueError:
+        candidates = tuple(root / candidate for root in roots)
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if not any(_is_within(resolved, root) for root in roots):
+            continue
+        if resolved.is_file():
+            return resolved
+    if any(not _is_within(candidate.resolve(), root) for root in roots):
         fail(f"Selected music path is outside the project root: {source_path}")
-    if not candidate.is_file():
-        fail(f"Selected music file does not exist: {candidate}")
-    return candidate
+    fail(f"Selected music file does not exist: {source_path}")
+
+
+def _is_within(path, root):
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def add_audio(video_path, audio_path, output_path, target_duration):
