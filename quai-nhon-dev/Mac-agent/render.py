@@ -221,6 +221,8 @@ def resolve_music_asset(selection):
     project_root = Path(__file__).resolve().parent.parent
     candidate = Path(source_path).expanduser()
     if not candidate.is_absolute():
+        if candidate.parts[:1] == (project_root.name,):
+            candidate = Path(*candidate.parts[1:])
         candidate = project_root / candidate
     candidate = candidate.resolve()
     try:
